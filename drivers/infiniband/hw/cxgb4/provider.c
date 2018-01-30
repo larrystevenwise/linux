@@ -531,6 +531,17 @@ static void get_dev_fw_str(struct ib_device *dev, char *str)
 		 FW_HDR_FW_VER_BUILD_G(c4iw_dev->rdev.lldi.fw_vers));
 }
 
+static int fill_res_entry(struct sk_buff *msg, struct rdma_restrack_entry *res)
+{
+	switch (res->type) {
+	case RDMA_RESTRACK_QP:
+		return c4iw_fill_res_qp_entry(msg, res);
+	default:
+		break;
+	}
+	return 0;
+}
+
 void c4iw_register_device(struct work_struct *work)
 {
 	int ret;
@@ -624,6 +635,7 @@ void c4iw_register_device(struct work_struct *work)
 	dev->ibdev.iwcm->add_ref = c4iw_qp_add_ref;
 	dev->ibdev.iwcm->rem_ref = c4iw_qp_rem_ref;
 	dev->ibdev.iwcm->get_qp = c4iw_get_qp;
+	dev->ibdev.res.provider_fill_res_entry = fill_res_entry;
 	memcpy(dev->ibdev.iwcm->ifname, dev->rdev.lldi.ports[0]->name,
 	       sizeof(dev->ibdev.iwcm->ifname));
 

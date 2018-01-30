@@ -2107,3 +2107,301 @@ int c4iw_ib_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 	init_attr->sq_sig_type = qhp->sq_sig_all ? IB_SIGNAL_ALL_WR : 0;
 	return 0;
 }
+
+static int fill_swsqe(struct sk_buff *msg, struct t4_sq *sq, u16 idx,
+		      struct t4_swsqe *sqe)
+{
+	struct nlattr *entry_attr;
+
+	entry_attr = nla_nest_start(msg, RDMA_NLDEV_ATTR_PROVIDER_ENTRY);
+	if (!entry_attr)
+		goto err;
+
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "    idx"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, idx))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "opcode"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, sqe->opcode))
+		goto err_cancel_entry;
+
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "wr_id"))
+		goto err_cancel_entry;
+	if (nla_put_u64_64bit(msg, RDMA_NLDEV_ATTR_PROVIDER_X64, sqe->wr_id,
+			      RDMA_NLDEV_ATTR_PAD))
+		goto err_cancel_entry;
+
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "complete"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, sqe->complete))
+		goto err_cancel_entry;
+	if (sqe->complete) {
+		if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING,
+				   "cqe_status"))
+			goto err_cancel_entry;
+		if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32,
+				CQE_STATUS(&sqe->cqe)))
+			goto err_cancel_entry;
+	}
+
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "signaled"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, sqe->signaled))
+		goto err_cancel_entry;
+
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "flushed"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, sqe->flushed))
+		goto err_cancel_entry;
+
+	nla_nest_end(msg, entry_attr);
+	return 0;
+err_cancel_entry:
+	nla_nest_cancel(msg, entry_attr);
+err:
+	return -EMSGSIZE;
+}
+
+/*
+ * Dump the first and last pending sqes.
+ */
+static int fill_swsqes(struct sk_buff *msg, struct t4_sq *sq,
+		       u16 first_idx, struct t4_swsqe *first_sqe,
+		       u16 last_idx, struct t4_swsqe *last_sqe)
+{
+	if (!first_sqe)
+		goto out;
+	if (fill_swsqe(msg, sq, first_idx, first_sqe))
+		goto err;
+	if (!last_sqe)
+		goto out;
+	if (fill_swsqe(msg, sq, last_idx, last_sqe))
+		goto err;
+out:
+	return 0;
+err:
+	return -EMSGSIZE;
+}
+
+static int fill_swrqe(struct sk_buff *msg, struct t4_rq *rq, u16 idx,
+		      struct t4_swrqe *rqe)
+{
+	struct nlattr *entry_attr;
+
+	entry_attr = nla_nest_start(msg, RDMA_NLDEV_ATTR_PROVIDER_ENTRY);
+	if (!entry_attr)
+		goto err;
+
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "    idx"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, idx))
+		goto err_cancel_entry;
+
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "wr_id"))
+		goto err_cancel_entry;
+	if (nla_put_u64_64bit(msg, RDMA_NLDEV_ATTR_PROVIDER_X64, rqe->wr_id,
+			      RDMA_NLDEV_ATTR_PAD))
+		goto err_cancel_entry;
+
+	nla_nest_end(msg, entry_attr);
+	return 0;
+
+err_cancel_entry:
+	nla_nest_cancel(msg, entry_attr);
+err:
+	return -EMSGSIZE;
+}
+
+/*
+ * Dump the first and last pending rqes.
+ */
+static int fill_swrqes(struct sk_buff *msg, struct t4_rq *rq,
+		       u16 first_idx, struct t4_swrqe *first_rqe,
+		       u16 last_idx, struct t4_swrqe *last_rqe)
+{
+	if (!first_rqe)
+		goto out;
+	if (fill_swrqe(msg, rq, first_idx, first_rqe))
+		goto err;
+	if (!last_rqe)
+		goto out;
+	if (fill_swrqe(msg, rq, last_idx, last_rqe))
+		goto err;
+out:
+	return 0;
+err:
+	return -EMSGSIZE;
+}
+
+int c4iw_fill_res_qp_entry(struct sk_buff *msg,
+			   struct rdma_restrack_entry *res)
+{
+	struct ib_qp *ibqp = container_of(res, struct ib_qp, res);
+	struct c4iw_qp *qhp = to_c4iw_qp(ibqp);
+	struct t4_swsqe *fsp = NULL, *lsp = NULL;
+	struct t4_swrqe *frp = NULL, *lrp = NULL;
+	struct nlattr *entry_attr, *table_attr;
+	struct t4_swsqe first_sqe, last_sqe;
+	struct t4_swrqe first_rqe, last_rqe;
+	u16 first_sq_idx, last_sq_idx;
+	u16 first_rq_idx, last_rq_idx;
+	struct t4_wq wq;
+
+	/* User qp state is not available, so don't dump user qps */
+	if (qhp->ucontext)
+		return 0;
+
+	table_attr = nla_nest_start(msg, RDMA_NLDEV_ATTR_PROVIDER);
+	if (!table_attr)
+		goto err;
+
+	/* Get a consistent snapshot */
+	spin_lock_irq(&qhp->lock);
+	wq = qhp->wq;
+
+	/* If there are any pending sqes, copy the first and last */
+	if (wq.sq.cidx != wq.sq.pidx) {
+		first_sq_idx = wq.sq.cidx;
+		first_sqe = qhp->wq.sq.sw_sq[first_sq_idx];
+		fsp = &first_sqe;
+		last_sq_idx = wq.sq.pidx;
+		if (last_sq_idx-- == 0)
+			last_sq_idx = wq.sq.size - 1;
+		if (last_sq_idx != first_sq_idx) {
+			last_sqe = qhp->wq.sq.sw_sq[last_sq_idx];
+			lsp = &last_sqe;
+		}
+	}
+
+	/* If there are any pending rqes, copy the first and last */
+	if (wq.rq.cidx != wq.rq.pidx) {
+		first_rq_idx = wq.rq.cidx;
+		first_rqe = qhp->wq.rq.sw_rq[first_rq_idx];
+		frp = &first_rqe;
+		last_rq_idx = wq.rq.pidx;
+		if (last_rq_idx-- == 0)
+			last_rq_idx = wq.rq.size - 1;
+		if (last_rq_idx != first_rq_idx) {
+			last_rqe = qhp->wq.rq.sw_rq[last_rq_idx];
+			lrp = &last_rqe;
+		}
+	}
+	spin_unlock_irq(&qhp->lock);
+
+	/* WQ+SQ */
+	entry_attr = nla_nest_start(msg, RDMA_NLDEV_ATTR_PROVIDER_ENTRY);
+	if (!entry_attr)
+		goto err_cancel_table;
+
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "sqid"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, wq.sq.qid))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "flushed"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, wq.flushed))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "memsize"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, wq.sq.memsize))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "cidx"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, wq.sq.cidx))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "pidx"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, wq.sq.pidx))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "wq_pidx"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, wq.sq.wq_pidx))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING,
+			   "flush_cidx"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32,
+			wq.sq.flush_cidx))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "in_use"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, wq.sq.in_use))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "size"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, wq.sq.size))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "flags"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_X32, wq.sq.flags))
+		goto err_cancel_entry;
+
+	nla_nest_end(msg, entry_attr);
+
+	if (fill_swsqes(msg, &wq.sq, first_sq_idx, fsp, last_sq_idx, lsp))
+		goto err_cancel_table;
+
+	/* RQ */
+	entry_attr = nla_nest_start(msg, RDMA_NLDEV_ATTR_PROVIDER_ENTRY);
+	if (!entry_attr)
+		goto err_cancel_table;
+
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "rqid"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, wq.rq.qid))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "memsize"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, wq.rq.memsize))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "cidx"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, wq.rq.cidx))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "pidx"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, wq.rq.pidx))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "wq_pidx"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, wq.rq.wq_pidx))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "msn"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, wq.rq.msn))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING,
+			   "rqt_hwaddr"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_X32,
+			wq.rq.rqt_hwaddr))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "rqt_size"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, wq.rq.rqt_size))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "in_use"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, wq.rq.in_use))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "size"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, wq.rq.size))
+		goto err_cancel_entry;
+
+	nla_nest_end(msg, entry_attr);
+
+	if (fill_swrqes(msg, &wq.rq, first_rq_idx, frp, last_rq_idx, lrp))
+		goto err_cancel_table;
+
+	nla_nest_end(msg, table_attr);
+	return 0;
+
+err_cancel_entry:
+	nla_nest_cancel(msg, entry_attr);
+err_cancel_table:
+	nla_nest_cancel(msg, table_attr);
+err:
+	return -EMSGSIZE;
+}
