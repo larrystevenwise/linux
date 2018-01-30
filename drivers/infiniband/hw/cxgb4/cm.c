@@ -48,6 +48,7 @@
 #include <net/addrconf.h>
 
 #include <rdma/ib_addr.h>
+#include <rdma/rdma_cm.h>
 
 #include <libcxgb_cm.h>
 #include "iw_cxgb4.h"
@@ -4218,6 +4219,102 @@ static int peer_abort_intr(struct c4iw_dev *dev, struct sk_buff *skb)
 out:
 	sched(dev, skb);
 	return 0;
+}
+
+int c4iw_fill_res_ep_entry(struct sk_buff *msg,
+			   struct rdma_restrack_entry *res)
+{
+	struct rdma_cm_id *cm_id = container_of(res, struct rdma_cm_id, res);
+	struct rdma_id_private *id_priv = container_of(cm_id,
+						struct rdma_id_private, id);
+	struct nlattr *entry_attr, *table_attr;
+	struct iw_cm_id *iw_cm_id;
+	struct c4iw_ep_common *epc;
+
+	iw_cm_id = id_priv->cm_id.iw;
+	if (!iw_cm_id)
+		return 0;
+	epc = (struct c4iw_ep_common *)iw_cm_id->provider_data;
+	if (!epc)
+		return 0;
+
+	table_attr = nla_nest_start(msg, RDMA_NLDEV_ATTR_PROVIDER);
+	if (!table_attr)
+		goto err;
+
+	entry_attr = nla_nest_start(msg, RDMA_NLDEV_ATTR_PROVIDER_ENTRY);
+	if (!entry_attr)
+		goto err_cancel_table;
+
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "state"))
+		goto err_cancel_entry;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, epc->state))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "flags"))
+		goto err_cancel_entry;
+	if (nla_put_u64_64bit(msg, RDMA_NLDEV_ATTR_PROVIDER_X64, epc->flags,
+			      RDMA_NLDEV_ATTR_PAD))
+		goto err_cancel_entry;
+	if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING, "history"))
+		goto err_cancel_entry;
+	if (nla_put_u64_64bit(msg, RDMA_NLDEV_ATTR_PROVIDER_X64, epc->history,
+			      RDMA_NLDEV_ATTR_PAD))
+		goto err_cancel_entry;
+	if (epc->state == LISTEN) {
+		struct c4iw_listen_ep *ep = (struct c4iw_listen_ep *)epc;
+
+		if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING,
+				   "stid"))
+			goto err_cancel_entry;
+		if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, ep->stid))
+			goto err_cancel_entry;
+		if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING,
+				   "backlog"))
+			goto err_cancel_entry;
+		if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, ep->backlog))
+			goto err_cancel_entry;
+	} else {
+		struct c4iw_ep *ep = (struct c4iw_ep *)epc;
+
+		if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING,
+				   "hwtid"))
+			goto err_cancel_entry;
+		if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, ep->hwtid))
+			goto err_cancel_entry;
+		if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING,
+				   "ord"))
+			goto err_cancel_entry;
+		if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, ep->ord))
+			goto err_cancel_entry;
+		if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING,
+				   "ird"))
+			goto err_cancel_entry;
+		if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, ep->ird))
+			goto err_cancel_entry;
+		if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING,
+				   "emss"))
+			goto err_cancel_entry;
+		if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32, ep->emss))
+			goto err_cancel_entry;
+		if (!ep->parent_ep) {
+			if (nla_put_string(msg, RDMA_NLDEV_ATTR_PROVIDER_STRING,
+					   "atid"))
+				goto err_cancel_entry;
+			if (nla_put_u32(msg, RDMA_NLDEV_ATTR_PROVIDER_U32,
+					ep->atid))
+				goto err_cancel_entry;
+		}
+	}
+	nla_nest_end(msg, entry_attr);
+	nla_nest_end(msg, table_attr);
+	return 0;
+
+err_cancel_entry:
+	nla_nest_cancel(msg, entry_attr);
+err_cancel_table:
+	nla_nest_cancel(msg, table_attr);
+err:
+	return -EMSGSIZE;
 }
 
 /*

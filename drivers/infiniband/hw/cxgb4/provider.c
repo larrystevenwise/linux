@@ -536,6 +536,8 @@ static int fill_res_entry(struct sk_buff *msg, struct rdma_restrack_entry *res)
 	switch (res->type) {
 	case RDMA_RESTRACK_QP:
 		return c4iw_fill_res_qp_entry(msg, res);
+	case RDMA_RESTRACK_CM_ID:
+		return c4iw_fill_res_ep_entry(msg, res);
 	default:
 		break;
 	}

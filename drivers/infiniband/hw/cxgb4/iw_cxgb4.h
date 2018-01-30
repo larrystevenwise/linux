@@ -1080,5 +1080,7 @@ void c4iw_invalidate_mr(struct c4iw_dev *rhp, u32 rkey);
 struct c4iw_wr_wait *c4iw_alloc_wr_wait(gfp_t gfp);
 int c4iw_fill_res_qp_entry(struct sk_buff *msg,
 			   struct rdma_restrack_entry *res);
+int c4iw_fill_res_ep_entry(struct sk_buff *msg,
+			   struct rdma_restrack_entry *res);
 
 #endif
