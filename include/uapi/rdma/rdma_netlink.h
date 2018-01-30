@@ -243,6 +243,10 @@ enum rdma_nldev_command {
 	RDMA_NLDEV_NUM_OPS
 };
 
+enum {
+	RDMA_NLDEV_ATTR_PROVIDER_STRLEN = 16,
+};
+
 enum rdma_nldev_attr {
 	/* don't change the order or add anything between, this is ABI! */
 	RDMA_NLDEV_ATTR_UNSPEC,
@@ -351,6 +355,20 @@ enum rdma_nldev_attr {
 	 * to read /proc/PID/comm file.
 	 */
 	RDMA_NLDEV_ATTR_RES_KERN_NAME,		/* string */
+
+	/*
+	 * provider-specific attributes.
+	 */
+	RDMA_NLDEV_ATTR_PROVIDER,		/* nested table */
+	RDMA_NLDEV_ATTR_PROVIDER_ENTRY,		/* nested table */
+	RDMA_NLDEV_ATTR_PROVIDER_STRING,	/* string */
+	RDMA_NLDEV_ATTR_PROVIDER_D32,		/* u32 */
+	RDMA_NLDEV_ATTR_PROVIDER_U32,		/* u32 */
+	RDMA_NLDEV_ATTR_PROVIDER_X32,		/* u32 */
+	RDMA_NLDEV_ATTR_PROVIDER_D64,		/* u64 */
+	RDMA_NLDEV_ATTR_PROVIDER_U64,		/* u64 */
+	RDMA_NLDEV_ATTR_PROVIDER_X64,		/* u64 */
+	RDMA_NLDEV_ATTR_PAD,			/* for 64b alignment */
 
 	RDMA_NLDEV_ATTR_MAX
 };

@@ -71,7 +71,26 @@ static const struct nla_policy nldev_policy[RDMA_NLDEV_ATTR_MAX] = {
 	[RDMA_NLDEV_ATTR_RES_PID]		= { .type = NLA_U32 },
 	[RDMA_NLDEV_ATTR_RES_KERN_NAME]		= { .type = NLA_NUL_STRING,
 						    .len = TASK_COMM_LEN },
+	[RDMA_NLDEV_ATTR_PROVIDER]		= { .type = NLA_NESTED },
+	[RDMA_NLDEV_ATTR_PROVIDER_ENTRY]	= { .type = NLA_NESTED },
+	[RDMA_NLDEV_ATTR_PROVIDER_STRING]	= { .type = NLA_NUL_STRING,
+				    .len = RDMA_NLDEV_ATTR_PROVIDER_STRLEN },
+	[RDMA_NLDEV_ATTR_PROVIDER_D32]		= { .type = NLA_S32 },
+	[RDMA_NLDEV_ATTR_PROVIDER_U32]		= { .type = NLA_U32 },
+	[RDMA_NLDEV_ATTR_PROVIDER_X32]		= { .type = NLA_U32 },
+	[RDMA_NLDEV_ATTR_PROVIDER_D64]		= { .type = NLA_S64 },
+	[RDMA_NLDEV_ATTR_PROVIDER_U64]		= { .type = NLA_U64 },
+	[RDMA_NLDEV_ATTR_PROVIDER_X64]		= { .type = NLA_U64 },
+	[RDMA_NLDEV_ATTR_PAD]			= { },
 };
+
+static int provider_fill_res_entry(struct rdma_restrack_root *resroot,
+				   struct sk_buff *msg,
+				   struct rdma_restrack_entry *res)
+{
+	return resroot->provider_fill_res_entry ?
+		resroot->provider_fill_res_entry(msg, res) : 0;
+}
 
 static int fill_nldev_handle(struct sk_buff *msg, struct ib_device *device)
 {
@@ -215,6 +234,7 @@ err:
 static int fill_res_qp_entry(struct sk_buff *msg,
 			     struct ib_qp *qp, uint32_t port)
 {
+	struct rdma_restrack_root *resroot = &qp->device->res;
 	struct rdma_restrack_entry *res = &qp->res;
 	struct ib_qp_init_attr qp_init_attr;
 	struct nlattr *entry_attr;
@@ -275,6 +295,8 @@ static int fill_res_qp_entry(struct sk_buff *msg,
 			goto err;
 	}
 
+	if (provider_fill_res_entry(resroot, msg, res))
+		goto err;
 	nla_nest_end(msg, entry_attr);
 	return 0;
 
