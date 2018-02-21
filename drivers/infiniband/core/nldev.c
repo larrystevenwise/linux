@@ -101,6 +101,11 @@ static const struct nla_policy nldev_policy[RDMA_NLDEV_ATTR_MAX] = {
 	[RDMA_NLDEV_ATTR_RES_IOVA]		= { .type = NLA_U64 },
 	[RDMA_NLDEV_ATTR_RES_MRLEN]		= { .type = NLA_U64 },
 	[RDMA_NLDEV_ATTR_RES_PGSIZE]		= { .type = NLA_U32 },
+	[RDMA_NLDEV_ATTR_RES_PD]		= { .type = NLA_NESTED },
+	[RDMA_NLDEV_ATTR_RES_PD_ENTRY]		= { .type = NLA_NESTED },
+	[RDMA_NLDEV_ATTR_RES_LOCAL_DMA_LKEY]	= { .type = NLA_U32 },
+	[RDMA_NLDEV_ATTR_RES_PD_FLAGS]		= { .type = NLA_U32 },
+	[RDMA_NLDEV_ATTR_RES_UNSAFE_GLOBAL_RKEY] = { .type = NLA_U32 },
 };
 
 static int fill_nldev_handle(struct sk_buff *msg, struct ib_device *device)
@@ -476,6 +481,53 @@ static int fill_res_mr_entry(struct sk_buff *msg,
 
 	/*
 	 * Existence of task means that it is user MR and netlink
+	 * user is invited to go and read /proc/PID/comm to get name
+	 * of the task file and res->task_com should be NULL.
+	 */
+	if (rdma_is_kernel_res(res)) {
+		if (nla_put_string(msg, RDMA_NLDEV_ATTR_RES_KERN_NAME,
+				   res->kern_name))
+			goto err;
+	} else {
+		if (nla_put_u32(msg, RDMA_NLDEV_ATTR_RES_PID,
+				task_pid_vnr(res->task)))
+			goto err;
+	}
+
+	nla_nest_end(msg, entry_attr);
+	return 0;
+
+err:
+	nla_nest_cancel(msg, entry_attr);
+out:
+	return -EMSGSIZE;
+}
+
+static int fill_res_pd_entry(struct sk_buff *msg,
+			     struct ib_pd *pd)
+{
+	struct rdma_restrack_entry *res = &pd->res;
+	struct nlattr *entry_attr;
+
+	entry_attr = nla_nest_start(msg, RDMA_NLDEV_ATTR_RES_PD_ENTRY);
+	if (!entry_attr)
+		goto out;
+
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_RES_LOCAL_DMA_LKEY,
+			pd->local_dma_lkey))
+		goto err;
+	if (nla_put_u64_64bit(msg, RDMA_NLDEV_ATTR_RES_USECNT,
+			      atomic_read(&pd->usecnt), 0))
+		goto err;
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_RES_PD_FLAGS, pd->flags))
+		goto err;
+	if ((pd->flags & IB_PD_UNSAFE_GLOBAL_RKEY) &&
+	    nla_put_u32(msg, RDMA_NLDEV_ATTR_RES_UNSAFE_GLOBAL_RKEY,
+			pd->unsafe_global_rkey))
+		goto err;
+
+	/*
+	 * Existence of task means that it is user PD and netlink
 	 * user is invited to go and read /proc/PID/comm to get name
 	 * of the task file and res->task_com should be NULL.
 	 */
@@ -1270,6 +1322,124 @@ err:
 	return ret;
 }
 
+static int nldev_res_get_pd_dumpit(struct sk_buff *skb,
+				   struct netlink_callback *cb)
+{
+	struct nlattr *tb[RDMA_NLDEV_ATTR_MAX];
+	struct rdma_restrack_entry *res;
+	int err, ret = 0, idx = 0;
+	struct nlattr *table_attr;
+	struct ib_device *device;
+	int start = cb->args[0];
+	struct ib_pd *pd = NULL;
+	struct nlmsghdr *nlh;
+	u32 index;
+
+	err = nlmsg_parse(cb->nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			  nldev_policy, NULL);
+	/*
+	 * Right now, we are expecting the device index to get PD information,
+	 * but it is possible to extend this code to return all devices in
+	 * one shot by checking the existence of RDMA_NLDEV_ATTR_DEV_INDEX.
+	 * if it doesn't exist, we will iterate over all devices.
+	 *
+	 * But it is not needed for now.
+	 */
+	if (err || !tb[RDMA_NLDEV_ATTR_DEV_INDEX])
+		return -EINVAL;
+
+	index = nla_get_u32(tb[RDMA_NLDEV_ATTR_DEV_INDEX]);
+	device = ib_device_get_by_index(index);
+	if (!device)
+		return -EINVAL;
+
+	nlh = nlmsg_put(skb, NETLINK_CB(cb->skb).portid, cb->nlh->nlmsg_seq,
+		RDMA_NL_GET_TYPE(RDMA_NL_NLDEV, RDMA_NLDEV_CMD_RES_PD_GET),
+		0, NLM_F_MULTI);
+
+	if (fill_nldev_handle(skb, device)) {
+		ret = -EMSGSIZE;
+		goto err;
+	}
+
+	table_attr = nla_nest_start(skb, RDMA_NLDEV_ATTR_RES_PD);
+	if (!table_attr) {
+		ret = -EMSGSIZE;
+		goto err;
+	}
+
+	down_read(&device->res.rwsem);
+	hash_for_each_possible(device->res.hash, res, node, RDMA_RESTRACK_PD) {
+		if (idx < start)
+			goto next;
+
+		if ((rdma_is_kernel_res(res) &&
+		     task_active_pid_ns(current) != &init_pid_ns) ||
+		    (!rdma_is_kernel_res(res) &&
+		     task_active_pid_ns(current) !=
+		     task_active_pid_ns(res->task)))
+			/*
+			 * 1. Kernel PDs should be visible in init namspace only
+			 * 2. Present only PDs visible in the current namespace
+			 */
+			goto next;
+
+		if (!rdma_restrack_get(res))
+			/*
+			 * Resource is under release now, but we are not
+			 * relesing lock now, so it will be released in
+			 * our next pass, once we will get ->next pointer.
+			 */
+			goto next;
+
+		pd = container_of(res, struct ib_pd, res);
+
+		up_read(&device->res.rwsem);
+		ret = fill_res_pd_entry(skb, pd);
+		down_read(&device->res.rwsem);
+		/*
+		 * Return resource back, but it won't be released till
+		 * the &device->res.rwsem will be released for write.
+		 */
+		rdma_restrack_put(res);
+
+		if (ret == -EMSGSIZE)
+			/*
+			 * There is a chance to optimize here.
+			 * It can be done by using list_prepare_entry
+			 * and list_for_each_entry_continue afterwards.
+			 */
+			break;
+		if (ret)
+			goto res_err;
+next:		idx++;
+	}
+	up_read(&device->res.rwsem);
+
+	nla_nest_end(skb, table_attr);
+	nlmsg_end(skb, nlh);
+	cb->args[0] = idx;
+
+	/*
+	 * No more PDs to fill, cancel the message and
+	 * return 0 to mark end of dumpit.
+	 */
+	if (!pd)
+		goto err;
+
+	put_device(&device->dev);
+	return skb->len;
+
+res_err:
+	nla_nest_cancel(skb, table_attr);
+	up_read(&device->res.rwsem);
+
+err:
+	nlmsg_cancel(skb, nlh);
+	put_device(&device->dev);
+	return ret;
+}
+
 static const struct rdma_nl_cbs nldev_cb_table[RDMA_NLDEV_NUM_OPS] = {
 	[RDMA_NLDEV_CMD_GET] = {
 		.doit = nldev_get_doit,
@@ -1304,6 +1474,9 @@ static const struct rdma_nl_cbs nldev_cb_table[RDMA_NLDEV_NUM_OPS] = {
 	},
 	[RDMA_NLDEV_CMD_RES_MR_GET] = {
 		.dump = nldev_res_get_mr_dumpit,
+	},
+	[RDMA_NLDEV_CMD_RES_PD_GET] = {
+		.dump = nldev_res_get_pd_dumpit,
 	},
 };
 
