@@ -238,6 +238,8 @@ enum rdma_nldev_command {
 
 	RDMA_NLDEV_CMD_RES_QP_GET, /* can dump */
 
+	RDMA_NLDEV_CMD_RES_CM_ID_GET, /* can dump */
+
 	RDMA_NLDEV_NUM_OPS
 };
 
@@ -349,6 +351,34 @@ enum rdma_nldev_attr {
 	 * to read /proc/PID/comm file.
 	 */
 	RDMA_NLDEV_ATTR_RES_KERN_NAME,		/* string */
+
+	RDMA_NLDEV_ATTR_RES_CM_ID,		/* nested table */
+	RDMA_NLDEV_ATTR_RES_CM_ID_ENTRY,	/* nested table */
+	/*
+	 * rdma_cm_id port space.
+	 */
+	RDMA_NLDEV_ATTR_RES_PS,			/* u32 */
+	/*
+	 * Source and destination IP address and port attributes.
+	 */
+	RDMA_NLDEV_ATTR_RES_IPV4_SADDR,		/* u8[4] */
+	RDMA_NLDEV_ATTR_RES_IPV4_DADDR,		/* u8[4] */
+	RDMA_NLDEV_ATTR_RES_IPV6_SADDR,		/* u8[16] */
+	RDMA_NLDEV_ATTR_RES_IPV6_DADDR,		/* u8[16] */
+	RDMA_NLDEV_ATTR_RES_IP_SPORT,		/* u16 */
+	RDMA_NLDEV_ATTR_RES_IP_DPORT,		/* u16 */
+	/*
+	 * ARPHRD_INFINIBAND, ARPHRD_ETHER, ...
+	 */
+	RDMA_NLDEV_ATTR_RES_DEV_TYPE,		/* u8 */
+	/*
+	 * enum enum rdma_transport_type (IB, IWARP, ...)
+	 */
+	RDMA_NLDEV_ATTR_RES_TRANSPORT_TYPE,	/* u8 */
+	/*
+	 * enum rdma_network_type (IB, IPv4, IPv6,...)
+	 */
+	RDMA_NLDEV_ATTR_RES_NETWORK_TYPE,	/* u8 */
 
 	RDMA_NLDEV_ATTR_MAX
 };
