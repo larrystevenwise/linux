@@ -92,6 +92,10 @@ static const struct nla_policy nldev_policy[RDMA_NLDEV_ATTR_MAX] = {
 	[RDMA_NLDEV_ATTR_RES_IOVA]		= { .type = NLA_U64 },
 	[RDMA_NLDEV_ATTR_RES_MRLEN]		= { .type = NLA_U64 },
 	[RDMA_NLDEV_ATTR_RES_PGSIZE]		= { .type = NLA_U32 },
+	[RDMA_NLDEV_ATTR_RES_PD]		= { .type = NLA_NESTED },
+	[RDMA_NLDEV_ATTR_RES_PD_ENTRY]		= { .type = NLA_NESTED },
+	[RDMA_NLDEV_ATTR_RES_LOCAL_DMA_LKEY]	= { .type = NLA_U32 },
+	[RDMA_NLDEV_ATTR_RES_UNSAFE_GLOBAL_RKEY] = { .type = NLA_U32 },
 };
 
 static int fill_nldev_handle(struct sk_buff *msg, struct ib_device *device)
@@ -439,6 +443,57 @@ static int fill_res_mr_entry(struct sk_buff *msg, struct netlink_callback *cb,
 
 	/*
 	 * Existence of task means that it is user MR and netlink
+	 * user is invited to go and read /proc/PID/comm to get name
+	 * of the task file and res->task_com should be NULL.
+	 */
+	if (rdma_is_kernel_res(res)) {
+		if (nla_put_string(msg, RDMA_NLDEV_ATTR_RES_KERN_NAME,
+				   res->kern_name))
+			goto err;
+	} else {
+		if (nla_put_u32(msg, RDMA_NLDEV_ATTR_RES_PID,
+				task_pid_vnr(res->task)))
+			goto err;
+	}
+
+	nla_nest_end(msg, entry_attr);
+	return 0;
+
+err:
+	nla_nest_cancel(msg, entry_attr);
+out:
+	return -EMSGSIZE;
+}
+
+static int fill_res_pd_entry(struct sk_buff *msg, struct netlink_callback *cb,
+			     struct rdma_restrack_entry *res, uint32_t port)
+{
+	struct ib_pd *pd = container_of(res, struct ib_pd, res);
+	struct nlattr *entry_attr;
+
+	entry_attr = nla_nest_start(msg, RDMA_NLDEV_ATTR_RES_PD_ENTRY);
+	if (!entry_attr)
+		goto out;
+
+	if (netlink_capable(cb->skb, CAP_NET_ADMIN)) {
+		if (nla_put_u32(msg, RDMA_NLDEV_ATTR_RES_LOCAL_DMA_LKEY,
+				pd->local_dma_lkey))
+			goto err;
+		if ((pd->flags & IB_PD_UNSAFE_GLOBAL_RKEY) &&
+		    nla_put_u32(msg, RDMA_NLDEV_ATTR_RES_UNSAFE_GLOBAL_RKEY,
+				pd->unsafe_global_rkey))
+			goto err;
+	}
+	if (nla_put_u64_64bit(msg, RDMA_NLDEV_ATTR_RES_USECNT,
+			      atomic_read(&pd->usecnt), 0))
+		goto err;
+	if ((pd->flags & IB_PD_UNSAFE_GLOBAL_RKEY) &&
+	    nla_put_u32(msg, RDMA_NLDEV_ATTR_RES_UNSAFE_GLOBAL_RKEY,
+			pd->unsafe_global_rkey))
+		goto err;
+
+	/*
+	 * Existence of task means that it is user PD and netlink
 	 * user is invited to go and read /proc/PID/comm to get name
 	 * of the task file and res->task_com should be NULL.
 	 */
@@ -902,6 +957,12 @@ static struct nldev_fill_res_entry fill_entries[RDMA_RESTRACK_MAX] = {
 		.nldev_cmd = RDMA_NLDEV_CMD_RES_MR_GET,
 		.nldev_attr = RDMA_NLDEV_ATTR_RES_MR,
 	},
+	[RDMA_RESTRACK_PD] = {
+		.fill_res_func = fill_res_pd_entry,
+		.res_type = RDMA_RESTRACK_PD,
+		.nldev_cmd = RDMA_NLDEV_CMD_RES_PD_GET,
+		.nldev_attr = RDMA_NLDEV_ATTR_RES_PD,
+	},
 };
 
 static int nldev_res_get_qp_dumpit(struct sk_buff *skb,
@@ -929,6 +990,13 @@ static int nldev_res_get_mr_dumpit(struct sk_buff *skb,
 {
 	return res_get_common_dumpit(skb, cb,
 				     &fill_entries[RDMA_RESTRACK_MR]);
+}
+
+static int nldev_res_get_pd_dumpit(struct sk_buff *skb,
+				   struct netlink_callback *cb)
+{
+	return res_get_common_dumpit(skb, cb,
+				     &fill_entries[RDMA_RESTRACK_PD]);
 }
 
 static const struct rdma_nl_cbs nldev_cb_table[RDMA_NLDEV_NUM_OPS] = {
@@ -965,6 +1033,9 @@ static const struct rdma_nl_cbs nldev_cb_table[RDMA_NLDEV_NUM_OPS] = {
 	},
 	[RDMA_NLDEV_CMD_RES_MR_GET] = {
 		.dump = nldev_res_get_mr_dumpit,
+	},
+	[RDMA_NLDEV_CMD_RES_PD_GET] = {
+		.dump = nldev_res_get_pd_dumpit,
 	},
 };
 
