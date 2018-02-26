@@ -75,5 +75,11 @@ struct rdma_id_private {
 	u8			reuseaddr;
 	u8			afonly;
 	enum ib_gid_type	gid_type;
+	const char *caller;
+
+	/*
+	 * Internal to RDMA/core, don't use in the drivers
+	 */
+	struct rdma_restrack_entry     res;
 };
 #endif /* _CMA_PRIV_H */
