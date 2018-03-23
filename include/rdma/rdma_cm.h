@@ -434,4 +434,16 @@ const void *rdma_consumer_reject_data(struct rdma_cm_id *id,
 void rdma_read_gids(struct rdma_cm_id *cm_id, union ib_gid *sgid,
 		    union ib_gid *dgid);
 
+/**
+ * rdma_iw_cm_id() - return the iw_cm_id pointer for this cm_id.
+ * @id: Communication Identifier
+ */
+struct iw_cm_id *rdma_iw_cm_id(struct rdma_cm_id *cm_id);
+
+/**
+ * rdma_res_to_id() - return the rdma_cm_id pointer for this restrack.
+ * @res: rdma resource tracking entry pointer
+ */
+struct rdma_cm_id *rdma_res_to_id(struct rdma_restrack_entry *res);
+
 #endif /* RDMA_CM_H */
