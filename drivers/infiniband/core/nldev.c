@@ -95,7 +95,24 @@ static const struct nla_policy nldev_policy[RDMA_NLDEV_ATTR_MAX] = {
 	[RDMA_NLDEV_ATTR_RES_PD_ENTRY]		= { .type = NLA_NESTED },
 	[RDMA_NLDEV_ATTR_RES_LOCAL_DMA_LKEY]	= { .type = NLA_U32 },
 	[RDMA_NLDEV_ATTR_RES_UNSAFE_GLOBAL_RKEY] = { .type = NLA_U32 },
+	[RDMA_NLDEV_ATTR_PROVIDER]		= { .type = NLA_NESTED },
+	[RDMA_NLDEV_ATTR_PROVIDER_ENTRY]	= { .type = NLA_NESTED },
+	[RDMA_NLDEV_ATTR_PROVIDER_STRING]	= { .type = NLA_NUL_STRING,
+				    .len = RDMA_NLDEV_ATTR_ENTRY_STRLEN },
+	[RDMA_NLDEV_ATTR_PROVIDER_PRINT_TYPE]	= { .type = NLA_U8 },
+	[RDMA_NLDEV_ATTR_PROVIDER_S32]		= { .type = NLA_S32 },
+	[RDMA_NLDEV_ATTR_PROVIDER_U32]		= { .type = NLA_U32 },
+	[RDMA_NLDEV_ATTR_PROVIDER_S64]		= { .type = NLA_S64 },
+	[RDMA_NLDEV_ATTR_PROVIDER_U64]		= { .type = NLA_U64 },
 };
+
+static int provider_fill_res_entry(struct rdma_restrack_root *resroot,
+				   struct sk_buff *msg,
+				   struct rdma_restrack_entry *res)
+{
+	return resroot->fill_res_entry ?
+		resroot->fill_res_entry(msg, res) : 0;
+}
 
 static int fill_nldev_handle(struct sk_buff *msg, struct ib_device *device)
 {
@@ -264,6 +281,7 @@ static int fill_res_qp_entry(struct sk_buff *msg, struct netlink_callback *cb,
 			     struct rdma_restrack_entry *res, uint32_t port)
 {
 	struct ib_qp *qp = container_of(res, struct ib_qp, res);
+	struct rdma_restrack_root *resroot = &qp->device->res;
 	struct ib_qp_init_attr qp_init_attr;
 	struct nlattr *entry_attr;
 	struct ib_qp_attr qp_attr;
@@ -313,6 +331,9 @@ static int fill_res_qp_entry(struct sk_buff *msg, struct netlink_callback *cb,
 	if (fill_res_name_pid(msg, res))
 		goto err;
 
+	if (provider_fill_res_entry(resroot, msg, res))
+		goto err;
+
 	nla_nest_end(msg, entry_attr);
 	return 0;
 
@@ -328,6 +349,7 @@ static int fill_res_cm_id_entry(struct sk_buff *msg,
 {
 	struct rdma_id_private *id_priv =
 				container_of(res, struct rdma_id_private, res);
+	struct rdma_restrack_root *resroot = &id_priv->id.device->res;
 	struct rdma_cm_id *cm_id = &id_priv->id;
 	struct nlattr *entry_attr;
 
@@ -369,6 +391,9 @@ static int fill_res_cm_id_entry(struct sk_buff *msg,
 	if (fill_res_name_pid(msg, res))
 		goto err;
 
+	if (provider_fill_res_entry(resroot, msg, res))
+		goto err;
+
 	nla_nest_end(msg, entry_attr);
 	return 0;
 
@@ -382,6 +407,7 @@ static int fill_res_cq_entry(struct sk_buff *msg, struct netlink_callback *cb,
 			     struct rdma_restrack_entry *res, uint32_t port)
 {
 	struct ib_cq *cq = container_of(res, struct ib_cq, res);
+	struct rdma_restrack_root *resroot = &cq->device->res;
 	struct nlattr *entry_attr;
 
 	entry_attr = nla_nest_start(msg, RDMA_NLDEV_ATTR_RES_CQ_ENTRY);
@@ -402,6 +428,9 @@ static int fill_res_cq_entry(struct sk_buff *msg, struct netlink_callback *cb,
 	if (fill_res_name_pid(msg, res))
 		goto err;
 
+	if (provider_fill_res_entry(resroot, msg, res))
+		goto err;
+
 	nla_nest_end(msg, entry_attr);
 	return 0;
 
@@ -415,6 +444,7 @@ static int fill_res_mr_entry(struct sk_buff *msg, struct netlink_callback *cb,
 			     struct rdma_restrack_entry *res, uint32_t port)
 {
 	struct ib_mr *mr = container_of(res, struct ib_mr, res);
+	struct rdma_restrack_root *resroot = &mr->pd->device->res;
 	struct nlattr *entry_attr;
 
 	entry_attr = nla_nest_start(msg, RDMA_NLDEV_ATTR_RES_MR_ENTRY);
@@ -438,6 +468,9 @@ static int fill_res_mr_entry(struct sk_buff *msg, struct netlink_callback *cb,
 	if (fill_res_name_pid(msg, res))
 		goto err;
 
+	if (provider_fill_res_entry(resroot, msg, res))
+		goto err;
+
 	nla_nest_end(msg, entry_attr);
 	return 0;
 
@@ -451,6 +484,7 @@ static int fill_res_pd_entry(struct sk_buff *msg, struct netlink_callback *cb,
 			     struct rdma_restrack_entry *res, uint32_t port)
 {
 	struct ib_pd *pd = container_of(res, struct ib_pd, res);
+	struct rdma_restrack_root *resroot = &pd->device->res;
 	struct nlattr *entry_attr;
 
 	entry_attr = nla_nest_start(msg, RDMA_NLDEV_ATTR_RES_PD_ENTRY);
@@ -475,6 +509,9 @@ static int fill_res_pd_entry(struct sk_buff *msg, struct netlink_callback *cb,
 		goto err;
 
 	if (fill_res_name_pid(msg, res))
+		goto err;
+
+	if (provider_fill_res_entry(resroot, msg, res))
 		goto err;
 
 	nla_nest_end(msg, entry_attr);
