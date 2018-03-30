@@ -16,6 +16,8 @@ void rdma_restrack_init(struct rdma_restrack_root *res)
 {
 	init_rwsem(&res->rwsem);
 	res->fill_res_entry = NULL;
+	res->fill_dev_info = NULL;
+	res->fill_port_info = NULL;
 }
 
 static const char *type2str(enum rdma_restrack_type type)

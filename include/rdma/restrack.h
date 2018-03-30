@@ -45,6 +45,7 @@ enum rdma_restrack_type {
 
 #define RDMA_RESTRACK_HASH_BITS	8
 struct rdma_restrack_entry;
+struct ib_device;
 
 /**
  * struct rdma_restrack_root - main resource tracking management
@@ -66,6 +67,19 @@ struct rdma_restrack_root {
 	 */
 	int (*fill_res_entry)(struct sk_buff *msg,
 			      struct rdma_restrack_entry *entry);
+	/**
+	 * @fill_dev_info: provider-specific fill function
+	 *
+	 * Allows rdma providers to add their own device attributes.
+	 */
+	int (*fill_dev_info)(struct sk_buff *msg, struct ib_device *device);
+	/**
+	 * @fill_port_info: provider-specific fill function
+	 *
+	 * Allows rdma providers to add their own port attributes.
+	 */
+	int (*fill_port_info)(struct sk_buff *msg, struct ib_device *device,
+			      u32 port);
 };
 
 /**

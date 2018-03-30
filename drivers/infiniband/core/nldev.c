@@ -114,6 +114,20 @@ static int provider_fill_res_entry(struct rdma_restrack_root *resroot,
 		resroot->fill_res_entry(msg, res) : 0;
 }
 
+static int provider_fill_dev_info(struct sk_buff *msg,
+				  struct ib_device *device)
+{
+	return device->res.fill_dev_info ?
+		device->res.fill_dev_info(msg, device) : 0;
+}
+
+static int provider_fill_port_info(struct sk_buff *msg,
+				   struct ib_device *device, u32 port)
+{
+	return device->res.fill_port_info ?
+		device->res.fill_port_info(msg, device, port) : 0;
+}
+
 static int fill_nldev_handle(struct sk_buff *msg, struct ib_device *device)
 {
 	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_DEV_INDEX, device->index))
@@ -155,11 +169,15 @@ static int fill_dev_info(struct sk_buff *msg, struct ib_device *device)
 		return -EMSGSIZE;
 	if (nla_put_u8(msg, RDMA_NLDEV_ATTR_DEV_NODE_TYPE, device->node_type))
 		return -EMSGSIZE;
+
+	if (provider_fill_dev_info(msg, device))
+		return -EMSGSIZE;
+
 	return 0;
 }
 
-static int fill_port_info(struct sk_buff *msg,
-			  struct ib_device *device, u32 port)
+static int fill_port_info(struct sk_buff *msg, struct ib_device *device,
+			  u32 port)
 {
 	struct ib_port_attr attr;
 	int ret;
@@ -193,6 +211,8 @@ static int fill_port_info(struct sk_buff *msg,
 	if (nla_put_u8(msg, RDMA_NLDEV_ATTR_PORT_STATE, attr.state))
 		return -EMSGSIZE;
 	if (nla_put_u8(msg, RDMA_NLDEV_ATTR_PORT_PHYS_STATE, attr.phys_state))
+		return -EMSGSIZE;
+	if (provider_fill_port_info(msg, device, port))
 		return -EMSGSIZE;
 	return 0;
 }
