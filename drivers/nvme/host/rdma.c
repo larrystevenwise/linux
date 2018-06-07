@@ -63,6 +63,7 @@ struct nvme_rdma_qe {
 	struct ib_cqe		cqe;
 	void			*data;
 	u64			dma;
+	bool			send_inline;
 };
 
 struct nvme_rdma_queue;
@@ -152,6 +153,10 @@ static DEFINE_MUTEX(nvme_rdma_ctrl_mutex);
 
 static struct workqueue_struct *nvme_rdma_wq;
 
+static bool foo_inline;
+module_param(foo_inline, bool, 0444);
+MODULE_PARM_DESC(foo_inline, "Use IB_SEND_INLINE when posting nvme cmd SEND");
+
 /*
  * Disabling this option makes small I/O goes faster, but is fundamentally
  * unsafe.  With it turned off we will have to register a global rkey that
@@ -197,7 +202,6 @@ static int nvme_rdma_alloc_qe(struct ib_device *ibdev, struct nvme_rdma_qe *qe,
 	qe->data = kzalloc(capsule_size, GFP_KERNEL);
 	if (!qe->data)
 		return -ENOMEM;
-
 	qe->dma = ib_dma_map_single(ibdev, qe->data, capsule_size, dir);
 	if (ib_dma_mapping_error(ibdev, qe->dma)) {
 		kfree(qe->data);
@@ -267,6 +271,8 @@ static int nvme_rdma_create_qp(struct nvme_rdma_queue *queue, const int factor)
 	init_attr.cap.max_recv_wr = queue->queue_size + 1;
 	init_attr.cap.max_recv_sge = 1;
 	init_attr.cap.max_send_sge = 1 + dev->num_inline_segments;
+	if (foo_inline)
+		init_attr.cap.max_inline_data = sizeof(struct nvme_command);
 	init_attr.sq_sig_type = IB_SIGNAL_REQ_WR;
 	init_attr.qp_type = IB_QPT_RC;
 	init_attr.send_cq = queue->ib_cq;
@@ -339,6 +345,7 @@ static int __nvme_rdma_init_request(struct nvme_rdma_ctrl *ctrl,
 	struct ib_device *ibdev = dev->dev;
 	int ret;
 
+	req->sqe.send_inline = foo_inline;
 	ret = nvme_rdma_alloc_qe(ibdev, &req->sqe, sizeof(struct nvme_command),
 			DMA_TO_DEVICE);
 	if (ret)
@@ -1056,8 +1063,15 @@ static int nvme_rdma_post_send(struct nvme_rdma_queue *queue,
 	struct ib_send_wr wr, *bad_wr;
 	int ret;
 
-	sge->addr   = qe->dma;
-	sge->length = sizeof(struct nvme_command),
+	wr.send_flags = 0;
+	if (qe->send_inline && num_sge == 1) {
+		sge->addr   = (uintptr_t)qe->data;
+		wr.send_flags |= IB_SEND_INLINE;
+	} else {
+		sge->addr   = qe->dma;
+	}
+
+	sge->length = sizeof(struct nvme_command);
 	sge->lkey   = queue->device->pd->local_dma_lkey;
 
 	qe->cqe.done = nvme_rdma_send_done;
@@ -1067,7 +1081,6 @@ static int nvme_rdma_post_send(struct nvme_rdma_queue *queue,
 	wr.sg_list    = sge;
 	wr.num_sge    = num_sge;
 	wr.opcode     = IB_WR_SEND;
-	wr.send_flags = 0;
 
 	/*
 	 * Unsignalled send completions are another giant desaster in the
