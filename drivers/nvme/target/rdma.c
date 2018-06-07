@@ -122,6 +122,10 @@ struct nvmet_rdma_device {
 	int			inline_page_count;
 };
 
+static bool foo_inline;
+module_param(foo_inline, bool, 0444);
+MODULE_PARM_DESC(foo_inline, "Use IB_SEND_INLINE when posting nvme cqe SEND");
+
 static bool nvmet_rdma_use_srq;
 module_param_named(use_srq, nvmet_rdma_use_srq, bool, 0444);
 MODULE_PARM_DESC(use_srq, "Use shared receive queue.");
@@ -403,10 +407,16 @@ static int nvmet_rdma_alloc_rsp(struct nvmet_rdma_device *ndev,
 	if (!r->req.rsp)
 		goto out;
 
-	r->send_sge.addr = ib_dma_map_single(ndev->device, r->req.rsp,
-			sizeof(*r->req.rsp), DMA_TO_DEVICE);
-	if (ib_dma_mapping_error(ndev->device, r->send_sge.addr))
-		goto out_free_rsp;
+	r->send_wr.send_flags = IB_SEND_SIGNALED;
+	if (foo_inline) {
+		r->send_sge.addr = (uintptr_t)r->req.rsp;
+		r->send_wr.send_flags |= IB_SEND_INLINE;
+	} else {
+		r->send_sge.addr = ib_dma_map_single(ndev->device, r->req.rsp,
+				sizeof(*r->req.rsp), DMA_TO_DEVICE);
+		if (ib_dma_mapping_error(ndev->device, r->send_sge.addr))
+			goto out_free_rsp;
+	}
 
 	r->send_sge.length = sizeof(*r->req.rsp);
 	r->send_sge.lkey = ndev->pd->local_dma_lkey;
@@ -416,7 +426,6 @@ static int nvmet_rdma_alloc_rsp(struct nvmet_rdma_device *ndev,
 	r->send_wr.wr_cqe = &r->send_cqe;
 	r->send_wr.sg_list = &r->send_sge;
 	r->send_wr.num_sge = 1;
-	r->send_wr.send_flags = IB_SEND_SIGNALED;
 
 	/* Data In / RDMA READ */
 	r->read_cqe.done = nvmet_rdma_read_data_done;
@@ -431,7 +440,8 @@ out:
 static void nvmet_rdma_free_rsp(struct nvmet_rdma_device *ndev,
 		struct nvmet_rdma_rsp *r)
 {
-	ib_dma_unmap_single(ndev->device, r->send_sge.addr,
+	if (!(r->send_wr.send_flags & IB_SEND_INLINE))
+		ib_dma_unmap_single(ndev->device, r->send_sge.addr,
 				sizeof(*r->req.rsp), DMA_TO_DEVICE);
 	kfree(r->req.rsp);
 }
@@ -1011,6 +1021,8 @@ static int nvmet_rdma_create_queue_ib(struct nvmet_rdma_queue *queue)
 	qp_attr.cap.max_rdma_ctxs = queue->send_queue_size;
 	qp_attr.cap.max_send_sge = max(ndev->device->attrs.max_sge_rd,
 					ndev->device->attrs.max_send_sge);
+	if (foo_inline)
+		qp_attr.cap.max_inline_data = sizeof(struct nvme_completion);
 
 	if (ndev->srq) {
 		qp_attr.srq = ndev->srq;
