@@ -740,7 +740,8 @@ static struct svc_xprt *svc_rdma_accept(struct svc_xprt *xprt)
 
 	/* Qualify the transport resource defaults with the
 	 * capabilities of this particular device */
-	newxprt->sc_max_sge = min((size_t)dev->attrs.max_sge,
+	newxprt->sc_max_sge = min3((size_t)dev->attrs.max_send_sge,
+				   (size_t)dev->attrs.max_recv_sge,
 				  (size_t)RPCSVC_MAXPAGES);
 	newxprt->sc_max_req_size = svcrdma_max_req_size;
 	newxprt->sc_max_requests = svcrdma_max_requests;

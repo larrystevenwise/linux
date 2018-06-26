@@ -517,7 +517,7 @@ rpcrdma_ep_create(struct rpcrdma_ep *ep, struct rpcrdma_ia *ia,
 	struct ib_cq *sendcq, *recvcq;
 	int rc;
 
-	max_sge = min_t(unsigned int, ia->ri_device->attrs.max_sge,
+	max_sge = min_t(unsigned int, ia->ri_device->attrs.max_send_sge,
 			RPCRDMA_MAX_SEND_SGES);
 	if (max_sge < RPCRDMA_MIN_SEND_SGES) {
 		pr_warn("rpcrdma: HCA provides only %d send SGEs\n", max_sge);
