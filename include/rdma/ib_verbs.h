@@ -229,6 +229,7 @@ enum ib_device_cap_flags {
 	/* Deprecated. Please use IB_RAW_PACKET_CAP_SCATTER_FCS. */
 	IB_DEVICE_RAW_SCATTER_FCS		= (1ULL << 34),
 	IB_DEVICE_RDMA_NETDEV_OPA_VNIC		= (1ULL << 35),
+	IB_DEVICE_PEER_MEMORY			= (1ULL << 36),
 };
 
 enum ib_signature_prot_cap {
@@ -1476,6 +1477,8 @@ struct ib_ucontext {
 #endif
 
 	struct ib_rdmacg_object	cg_obj;
+	void		 *peer_mem_private_data;
+	char		 *peer_mem_name;
 };
 
 struct ib_uobject {
