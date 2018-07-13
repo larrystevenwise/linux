@@ -119,6 +119,8 @@ struct mlx5_ib_vma_private_data {
 	struct mutex *vma_private_list_mutex;
 };
 
+struct mlx5_ib_peer_id;
+
 struct mlx5_ib_ucontext {
 	struct ib_ucontext	ibucontext;
 	struct list_head	db_page_list;
@@ -524,6 +526,14 @@ struct mlx5_ib_mr {
 	struct mlx5_ib_mr      *parent;
 	atomic_t		num_leaf_free;
 	wait_queue_head_t       q_leaf_free;
+	struct mlx5_ib_peer_id *peer_id;
+	atomic_t      invalidated;
+	struct completion invalidation_comp;
+};
+
+struct mlx5_ib_peer_id {
+	struct completion comp;
+	struct mlx5_ib_mr *mr;
 };
 
 struct mlx5_ib_mw {
