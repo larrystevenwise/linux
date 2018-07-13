@@ -467,6 +467,57 @@ err0:
 	return ERR_PTR(ret);
 }
 
+static void release_mr_resources(struct c4iw_mr *mr)
+{
+	struct c4iw_dev *dev = mr->rhp;
+	u32 mmid;
+
+	mmid = mr->attr.stag >> 8;
+	remove_handle(dev, &dev->mmidr, mmid);
+	if (mr->mpl)
+		dma_free_coherent(&mr->rhp->rdev.lldi.pdev->dev,
+				  mr->max_mpl_len, mr->mpl, mr->mpl_addr);
+	dereg_mem(&dev->rdev, mr->attr.stag, mr->attr.pbl_size,
+		       mr->attr.pbl_addr, mr->dereg_skb);
+	if (mr->attr.pbl_size)
+		c4iw_pblpool_free(&mr->rhp->rdev, mr->attr.pbl_addr,
+				  mr->attr.pbl_size << 3);
+	if (mr->kva)
+		kfree((void *) (unsigned long) mr->kva);
+	if (mr->umem)
+		ib_umem_release(mr->umem);
+	pr_debug("%s mmid 0x%x ptr %p\n", __func__, mmid, mr);
+	return;
+}
+
+static void invalidate_umem(void *invalidation_cookie,
+			    struct ib_umem *umem,
+			    unsigned long addr, size_t size)
+{
+	struct c4iw_mr *mr = (struct c4iw_mr *)invalidation_cookie;
+
+	mutex_lock(&mr->live_lock);
+
+	/* 
+	 * This function is called under client peer lock so its resources are
+	 * race protected.
+	 */
+	if (atomic_inc_return(&mr->invalidated) > 1) {
+		umem->invalidation_ctx->inflight_invalidation = 1;
+		mutex_unlock(&mr->live_lock);
+		return;
+	}
+	if (!mr->live) {
+		mutex_unlock(&mr->live_lock);
+		return;
+	}
+
+	mutex_unlock(&mr->live_lock);
+	umem->invalidation_ctx->peer_callback = 1;
+	release_mr_resources(mr);
+	complete(&mr->invalidation_comp);
+}
+
 struct ib_mr *c4iw_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 			       u64 virt, int acc, struct ib_udata *udata)
 {
@@ -478,6 +529,7 @@ struct ib_mr *c4iw_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 	struct c4iw_dev *rhp;
 	struct c4iw_pd *php;
 	struct c4iw_mr *mhp;
+	struct ib_peer_memory_client *ib_peer_mem;
 
 	pr_debug("%s ib_pd %p\n", __func__, pd);
 
@@ -503,9 +555,11 @@ struct ib_mr *c4iw_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 		return ERR_PTR(-ENOMEM);
 	}
 
+	mutex_init(&mhp->live_lock);
 	mhp->rhp = rhp;
 
-	mhp->umem = ib_umem_get(pd->uobject->context, start, length, acc, 0, 0);
+	mhp->umem = ib_umem_get(pd->uobject->context, start, length, acc, 0,
+				IB_PEER_MEM_ALLOW | IB_PEER_MEM_INVAL_SUPP);
 	if (IS_ERR(mhp->umem)) {
 		err = PTR_ERR(mhp->umem);
 		kfree_skb(mhp->dereg_skb);
@@ -513,12 +567,32 @@ struct ib_mr *c4iw_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 		return ERR_PTR(err);
 	}
 
+	ib_peer_mem = mhp->umem->ib_peer_mem;
+	if (ib_peer_mem) {
+		err = ib_umem_activate_invalidation_notifier(mhp->umem,
+			invalidate_umem, mhp);
+		if (err)
+			goto err;
+	}
+
+	mutex_lock(&mhp->live_lock);
+	if (atomic_read(&mhp->invalidated))
+		goto err_unlock;
+
+	if (ib_peer_mem) {
+		if (acc & IB_ACCESS_MW_BIND) {
+			err = -ENOSYS;
+			goto err_unlock;
+		}
+		init_completion(&mhp->invalidation_comp);
+	}
+
 	shift = mhp->umem->page_shift;
 
 	n = mhp->umem->nmap;
 	err = alloc_pbl(mhp, n);
 	if (err)
-		goto err;
+		goto err_unlock;
 
 	pages = (__be64 *) __get_free_page(GFP_KERNEL);
 	if (!pages) {
@@ -565,12 +639,16 @@ pbl_done:
 	if (err)
 		goto err_pbl;
 
+	mhp->live = 1;
+	mutex_unlock(&mhp->live_lock);
 	return &mhp->ibmr;
 
 err_pbl:
 	c4iw_pblpool_free(&mhp->rhp->rdev, mhp->attr.pbl_addr,
 			      mhp->attr.pbl_size << 3);
 
+err_unlock:
+	mutex_unlock(&mhp->live_lock);
 err:
 	ib_umem_release(mhp->umem);
 	kfree_skb(mhp->dereg_skb);
@@ -740,30 +818,25 @@ int c4iw_map_mr_sg(struct ib_mr *ibmr, struct scatterlist *sg, int sg_nents,
 
 int c4iw_dereg_mr(struct ib_mr *ib_mr)
 {
-	struct c4iw_dev *rhp;
 	struct c4iw_mr *mhp;
-	u32 mmid;
 
 	pr_debug("%s ib_mr %p\n", __func__, ib_mr);
 
 	mhp = to_c4iw_mr(ib_mr);
-	rhp = mhp->rhp;
-	mmid = mhp->attr.stag >> 8;
-	remove_handle(rhp, &rhp->mmidr, mmid);
-	if (mhp->mpl)
-		dma_free_coherent(&mhp->rhp->rdev.lldi.pdev->dev,
-				  mhp->max_mpl_len, mhp->mpl, mhp->mpl_addr);
-	dereg_mem(&rhp->rdev, mhp->attr.stag, mhp->attr.pbl_size,
-		  mhp->attr.pbl_addr, mhp->dereg_skb);
-	if (mhp->attr.pbl_size)
-		c4iw_pblpool_free(&mhp->rhp->rdev, mhp->attr.pbl_addr,
-				  mhp->attr.pbl_size << 3);
-	if (mhp->kva)
-		kfree((void *) (unsigned long) mhp->kva);
-	if (mhp->umem)
-		ib_umem_release(mhp->umem);
-	pr_debug("%s mmid 0x%x ptr %p\n", __func__, mmid, mhp);
-	kfree(mhp);
+
+	/*
+	 * If its invalidated or invalidating, then wait for that 
+	 * to complete which deregisters the MR, and then just
+	 * free mhp.  Otherwise we do the invalidation here.
+	 */
+	if (atomic_inc_return(&mhp->invalidated) > 1) {
+		wait_for_completion(&mhp->invalidation_comp);
+		goto end;
+	}
+
+	release_mr_resources(mhp);
+end:
+ 	kfree(mhp);
 	return 0;
 }
 

@@ -333,7 +333,7 @@ static int c4iw_query_device(struct ib_device *ibdev, struct ib_device_attr *pro
 	memcpy(&props->sys_image_guid, dev->rdev.lldi.ports[0]->dev_addr, 6);
 	props->hw_ver = CHELSIO_CHIP_RELEASE(dev->rdev.lldi.adapter_type);
 	props->fw_ver = dev->rdev.lldi.fw_vers;
-	props->device_cap_flags = dev->device_cap_flags;
+	props->device_cap_flags = dev->device_cap_flags | IB_DEVICE_PEER_MEMORY;
 	props->page_size_cap = T4_PAGESIZE_MASK;
 	props->vendor_id = (u32)dev->rdev.lldi.pdev->vendor;
 	props->vendor_part_id = (u32)dev->rdev.lldi.pdev->device;
@@ -542,7 +542,8 @@ int c4iw_register_device(struct c4iw_dev *dev)
 	memset(&dev->ibdev.node_guid, 0, sizeof(dev->ibdev.node_guid));
 	memcpy(&dev->ibdev.node_guid, dev->rdev.lldi.ports[0]->dev_addr, 6);
 	dev->ibdev.owner = THIS_MODULE;
-	dev->device_cap_flags = IB_DEVICE_LOCAL_DMA_LKEY | IB_DEVICE_MEM_WINDOW;
+	dev->device_cap_flags = IB_DEVICE_LOCAL_DMA_LKEY |
+				IB_DEVICE_MEM_WINDOW;
 	if (fastreg_support)
 		dev->device_cap_flags |= IB_DEVICE_MEM_MGT_EXTENSIONS;
 	dev->ibdev.local_dma_lkey = 0;

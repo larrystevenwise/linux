@@ -398,6 +398,10 @@ struct c4iw_mr {
 	dma_addr_t mpl_addr;
 	u32 max_mpl_len;
 	u32 mpl_len;
+	atomic_t invalidated;
+	struct completion invalidation_comp;
+	struct mutex live_lock;
+	int live;
 };
 
 static inline struct c4iw_mr *to_c4iw_mr(struct ib_mr *ibmr)
@@ -411,6 +415,10 @@ struct c4iw_mw {
 	struct sk_buff *dereg_skb;
 	u64 kva;
 	struct tpt_attributes attr;
+	atomic_t invalidated;
+	struct completion invalidation_comp;
+	struct mutex live_lock;
+	int live;
 };
 
 static inline struct c4iw_mw *to_c4iw_mw(struct ib_mw *ibmw)
