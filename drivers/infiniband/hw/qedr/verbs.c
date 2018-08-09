@@ -778,7 +778,7 @@ static inline int qedr_init_user_queue(struct ib_ucontext *ib_ctx,
 
 	q->buf_addr = buf_addr;
 	q->buf_len = buf_len;
-	q->umem = ib_umem_get(ib_ctx, q->buf_addr, q->buf_len, access, dmasync);
+	q->umem = ib_umem_get(ib_ctx, q->buf_addr, q->buf_len, access, dmasync, 0);
 	if (IS_ERR(q->umem)) {
 		DP_ERR(dev, "create user queue: failed ib_umem_get, got %ld\n",
 		       PTR_ERR(q->umem));
@@ -2256,7 +2256,7 @@ struct ib_mr *qedr_reg_user_mr(struct ib_pd *ibpd, u64 start, u64 len,
 
 	mr->type = QEDR_MR_USER;
 
-	mr->umem = ib_umem_get(ibpd->uobject->context, start, len, acc, 0);
+	mr->umem = ib_umem_get(ibpd->uobject->context, start, len, acc, 0, 0);
 	if (IS_ERR(mr->umem)) {
 		rc = -EFAULT;
 		goto err0;

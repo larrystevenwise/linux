@@ -130,7 +130,7 @@ struct ib_mr *pvrdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 	}
 
 	umem = ib_umem_get(pd->uobject->context, start,
-			   length, access_flags, 0);
+			   length, access_flags, 0, 0);
 	if (IS_ERR(umem)) {
 		dev_warn(&dev->pdev->dev,
 			 "could not get umem for mem region\n");
