@@ -565,7 +565,7 @@ enum rdma_link_layer rxe_link_layer(struct rxe_dev *rxe, unsigned int port_num)
 	return IB_LINK_LAYER_ETHERNET;
 }
 
-struct rxe_dev *rxe_net_add(struct net_device *ndev)
+struct rxe_dev *rxe_net_add(char *ibdev_name, struct net_device *ndev)
 {
 	int err;
 	struct rxe_dev *rxe = NULL;
@@ -575,6 +575,7 @@ struct rxe_dev *rxe_net_add(struct net_device *ndev)
 		return NULL;
 
 	rxe->ndev = ndev;
+	strlcpy(rxe->ib_dev.name, ibdev_name, IB_DEVICE_NAME_MAX);
 
 	err = rxe_add(rxe, ndev->mtu);
 	if (err) {
