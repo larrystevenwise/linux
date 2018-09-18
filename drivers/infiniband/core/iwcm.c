@@ -82,8 +82,8 @@ EXPORT_SYMBOL(iwcm_reject_msg);
 
 static struct rdma_nl_cbs iwcm_nl_cb_table[RDMA_NL_IWPM_NUM_OPS] = {
 	[RDMA_NL_IWPM_REG_PID] = {.dump = iwpm_register_pid_cb},
-	[RDMA_NL_IWPM_ADD_MAPPING] = {.dump = iwpm_add_mapping_cb},
-	[RDMA_NL_IWPM_QUERY_MAPPING] = {.dump = iwpm_add_and_query_mapping_cb},
+	[RDMA_NL_IWPM_ADD] = {.dump = iwpm_add_mapping_cb},
+	[RDMA_NL_IWPM_QUERY] = {.dump = iwpm_add_and_query_mapping_cb},
 	[RDMA_NL_IWPM_REMOTE_INFO] = {.dump = iwpm_remote_info_cb},
 	[RDMA_NL_IWPM_HANDLE_ERR] = {.dump = iwpm_mapping_error_cb},
 	[RDMA_NL_IWPM_MAPINFO] = {.dump = iwpm_mapping_info_cb},
@@ -521,6 +521,8 @@ static int iw_cm_map(struct iw_cm_id *cm_id, bool active)
 	cm_id->mapped = true;
 	pm_msg.loc_addr = cm_id->local_addr;
 	pm_msg.rem_addr = cm_id->remote_addr;
+	pm_msg.flags = (cm_id->device->iwcm->driver_flags & IW_F_NO_PORT_MAP) ?
+		       IWPM_FLAGS_NO_PORT_MAP : 0;
 	if (active)
 		status = iwpm_add_and_query_mapping(&pm_msg,
 						    RDMA_NL_IWCM);

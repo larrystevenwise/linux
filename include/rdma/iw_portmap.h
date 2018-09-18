@@ -58,6 +58,7 @@ struct iwpm_sa_data {
 	struct sockaddr_storage mapped_loc_addr;
 	struct sockaddr_storage rem_addr;
 	struct sockaddr_storage mapped_rem_addr;
+	u32 flags;
 };
 
 /**
