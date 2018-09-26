@@ -99,4 +99,15 @@ int rdma_nl_multicast(struct sk_buff *skb, unsigned int group, gfp_t flags);
  * Returns 0 on success or a negative for no listeners.
  */
 int rdma_nl_chk_listeners(unsigned int group);
+
+struct rdma_link_ops {
+	struct list_head list;
+	const char *type;
+	int (*newlink)(char *ibdev_name, char *ndev_name);
+	int (*dellink)(char *ibdev_name);
+};
+
+void rdma_link_register(struct rdma_link_ops *ops);
+void rdma_link_unregister(struct rdma_link_ops *ops);
+
 #endif /* _RDMA_NETLINK_H */

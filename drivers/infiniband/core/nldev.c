@@ -33,6 +33,7 @@
 #include <linux/module.h>
 #include <linux/pid.h>
 #include <linux/pid_namespace.h>
+#include <linux/mutex.h>
 #include <net/netlink.h>
 #include <rdma/rdma_cm.h>
 #include <rdma/rdma_netlink.h>
@@ -107,6 +108,8 @@ static const struct nla_policy nldev_policy[RDMA_NLDEV_ATTR_MAX] = {
 	[RDMA_NLDEV_ATTR_DRIVER_U32]		= { .type = NLA_U32 },
 	[RDMA_NLDEV_ATTR_DRIVER_S64]		= { .type = NLA_S64 },
 	[RDMA_NLDEV_ATTR_DRIVER_U64]		= { .type = NLA_U64 },
+	[RDMA_NLDEV_ATTR_LINK_TYPE]		= { .type = NLA_NUL_STRING,
+						    .len = IFNAMSIZ },
 };
 
 static int put_driver_name_print_type(struct sk_buff *msg, const char *name,
@@ -1072,6 +1075,110 @@ static int nldev_res_get_pd_dumpit(struct sk_buff *skb,
 	return res_get_common_dumpit(skb, cb, RDMA_RESTRACK_PD);
 }
 
+static LIST_HEAD(link_ops);
+static DEFINE_MUTEX(link_ops_mutex);
+
+void rdma_link_register(struct rdma_link_ops *ops)
+{
+	mutex_lock(&link_ops_mutex);
+	list_add(&ops->list, &link_ops);
+	mutex_unlock(&link_ops_mutex);
+}
+EXPORT_SYMBOL(rdma_link_register);
+
+void rdma_link_unregister(struct rdma_link_ops *ops)
+{
+	mutex_lock(&link_ops_mutex);
+	list_del_init(&ops->list);
+	mutex_unlock(&link_ops_mutex);
+}
+EXPORT_SYMBOL(rdma_link_unregister);
+
+static const struct rdma_link_ops *link_ops_get(const char *type)
+{
+	const struct rdma_link_ops *ops;
+
+	mutex_lock(&link_ops_mutex);
+	list_for_each_entry(ops, &link_ops, list) {
+		if (!strncmp(ops->type, type, IFNAMSIZ))
+			goto out;
+	}
+	ops = NULL;
+out:
+	mutex_unlock(&link_ops_mutex);
+	return ops;
+}
+
+static int nldev_newlink(struct sk_buff *skb, struct nlmsghdr *nlh,
+			  struct netlink_ext_ack *extack)
+{
+	struct nlattr *tb[RDMA_NLDEV_ATTR_MAX];
+	char ibdev_name[IB_DEVICE_NAME_MAX];
+	const struct rdma_link_ops *ops;
+	char ndev_name[IFNAMSIZ];
+	char type[IFNAMSIZ];
+	int err;
+
+	err = nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			  nldev_policy, extack);
+	if (err || !tb[RDMA_NLDEV_ATTR_DEV_NAME] ||
+	    !tb[RDMA_NLDEV_ATTR_LINK_TYPE] || !tb[RDMA_NLDEV_ATTR_NDEV_NAME]) {
+		err = -EINVAL;
+		goto err_out;
+	}
+
+	nla_strlcpy(ibdev_name, tb[RDMA_NLDEV_ATTR_DEV_NAME],
+		    sizeof(ibdev_name));
+	nla_strlcpy(type, tb[RDMA_NLDEV_ATTR_LINK_TYPE], sizeof(type));
+	nla_strlcpy(ndev_name, tb[RDMA_NLDEV_ATTR_NDEV_NAME],
+		    sizeof(ndev_name));
+	pr_debug("ibdev_name |%s| type |%s| ndev_name |%s|\n", ibdev_name,
+		 type, ndev_name);
+
+	ops = link_ops_get(type);
+	if (!ops) {
+		err = -ENODEV;
+		goto err_out;
+	}
+	
+	err = ops->newlink(ibdev_name, ndev_name);
+err_out:
+	return err;
+}
+
+static int nldev_dellink(struct sk_buff *skb, struct nlmsghdr *nlh,
+			  struct netlink_ext_ack *extack)
+{
+	struct nlattr *tb[RDMA_NLDEV_ATTR_MAX];
+	char ibdev_name[IB_DEVICE_NAME_MAX];
+	const struct rdma_link_ops *ops;
+	char type[IFNAMSIZ];
+	int err;
+
+	err = nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			  nldev_policy, extack);
+	if (err || !tb[RDMA_NLDEV_ATTR_DEV_NAME] ||
+	    !tb[RDMA_NLDEV_ATTR_LINK_TYPE]) {
+		err = !err ? -EINVAL : err;
+		goto err_out;
+	}
+
+	nla_strlcpy(ibdev_name, tb[RDMA_NLDEV_ATTR_DEV_NAME],
+		    sizeof(ibdev_name));
+	nla_strlcpy(type, tb[RDMA_NLDEV_ATTR_LINK_TYPE], sizeof(type));
+	pr_debug("ibdev_name |%s| type |%s|\n", ibdev_name, type);
+
+	ops = link_ops_get(type);
+	if (!ops) {
+		err = -ENODEV;
+		goto err_out;
+	}
+	
+	err = ops->dellink(ibdev_name);
+err_out:
+	return err;
+}
+
 static const struct rdma_nl_cbs nldev_cb_table[RDMA_NLDEV_NUM_OPS] = {
 	[RDMA_NLDEV_CMD_GET] = {
 		.doit = nldev_get_doit,
@@ -1109,6 +1216,12 @@ static const struct rdma_nl_cbs nldev_cb_table[RDMA_NLDEV_NUM_OPS] = {
 	},
 	[RDMA_NLDEV_CMD_RES_PD_GET] = {
 		.dump = nldev_res_get_pd_dumpit,
+	},
+	[RDMA_NLDEV_CMD_NEWLINK] = {
+		.doit = nldev_newlink,
+	},
+	[RDMA_NLDEV_CMD_DELLINK] = {
+		.doit = nldev_dellink,
 	},
 };
 
