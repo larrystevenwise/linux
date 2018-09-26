@@ -31,6 +31,7 @@
  * SOFTWARE.
  */
 
+#include <rdma/rdma_netlink.h>
 #include <net/addrconf.h>
 #include "rxe.h"
 #include "rxe_loc.h"
@@ -340,6 +341,64 @@ void rxe_remove(struct rxe_dev *rxe)
 	rxe_dev_put(rxe);
 }
 
+static int rxe_newlink(char *ibdev_name, char *ndev_name)
+{
+	struct net_device *ndev = NULL;
+	struct rxe_dev *rxe;
+	int err = 0;
+
+	ndev = dev_get_by_name(&init_net, ndev_name);
+	if (!ndev) {
+		pr_err("interface %s not found\n", ndev_name);
+		err = -ENODEV;
+		goto err;
+	}
+
+	if (net_to_rxe(ndev)) {
+		pr_err("already configured on %s\n", ndev_name);
+		err = -EEXIST;
+		goto err;
+	}
+
+	rxe = rxe_net_add(ibdev_name, ndev);
+	if (!rxe) {
+		pr_err("failed to add %s\n", ndev_name);
+		err = -EINVAL;
+		goto err;
+	}
+
+	if (netif_running(ndev) && netif_carrier_ok(ndev))
+		rxe_port_up(rxe);
+	else
+		rxe_port_down(rxe);
+	pr_info("added %s to %s\n", rxe->ib_dev.name, ndev->name);
+err:
+	if (ndev)
+		dev_put(ndev);
+	return err;
+}
+
+static int rxe_dellink(char *ibdev_name)
+{
+	struct rxe_dev *rxe;
+
+	rxe = get_rxe_by_name(ibdev_name);
+	if (!rxe) {
+		pr_err("not configured on %s\n", ibdev_name);
+		return -ENODEV;
+	}
+
+	list_del(&rxe->list);
+	rxe_remove(rxe);
+	return 0;
+}
+
+static struct rdma_link_ops rxe_link_ops = {
+	.type = "rxe",
+	.newlink = rxe_newlink,
+	.dellink = rxe_dellink,
+};
+
 static int __init rxe_module_init(void)
 {
 	int err;
@@ -355,12 +414,14 @@ static int __init rxe_module_init(void)
 	if (err)
 		return err;
 
+	rdma_link_register(&rxe_link_ops);
 	pr_info("loaded\n");
 	return 0;
 }
 
 static void __exit rxe_module_exit(void)
 {
+	rdma_link_unregister(&rxe_link_ops);
 	rxe_remove_all();
 	rxe_net_exit();
 	rxe_cache_exit();
