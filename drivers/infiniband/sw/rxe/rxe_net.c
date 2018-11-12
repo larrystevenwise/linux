@@ -550,7 +550,7 @@ enum rdma_link_layer rxe_link_layer(struct rxe_dev *rxe, unsigned int port_num)
 	return IB_LINK_LAYER_ETHERNET;
 }
 
-struct rxe_dev *rxe_net_add(struct net_device *ndev)
+struct rxe_dev *rxe_net_add(const char *ibdev_name, struct net_device *ndev)
 {
 	int err;
 	struct rxe_dev *rxe = NULL;
@@ -561,7 +561,7 @@ struct rxe_dev *rxe_net_add(struct net_device *ndev)
 
 	rxe->ndev = ndev;
 
-	err = rxe_add(rxe, ndev->mtu);
+	err = rxe_add(rxe, ndev->mtu, ibdev_name);
 	if (err) {
 		ib_dealloc_device(&rxe->ib_dev);
 		return NULL;
