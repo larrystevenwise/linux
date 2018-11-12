@@ -229,7 +229,9 @@ enum rdma_nldev_command {
 	RDMA_NLDEV_CMD_GET, /* can dump */
 	RDMA_NLDEV_CMD_SET,
 
-	/* 3 - 4 are free to use */
+	RDMA_NLDEV_CMD_NEWLINK,
+
+	RDMA_NLDEV_CMD_DELLINK,
 
 	RDMA_NLDEV_CMD_PORT_GET = 5, /* can dump */
 
@@ -426,6 +428,11 @@ enum rdma_nldev_attr {
 	RDMA_NLDEV_ATTR_DRIVER_U32,		/* u32 */
 	RDMA_NLDEV_ATTR_DRIVER_S64,		/* s64 */
 	RDMA_NLDEV_ATTR_DRIVER_U64,		/* u64 */
+
+	/*
+	 * Identifies the rdma driver. eg: "rxe" or "siw"
+	 */
+	RDMA_NLDEV_ATTR_LINK_TYPE,		/* string */
 
 	/*
 	 * Always the end
