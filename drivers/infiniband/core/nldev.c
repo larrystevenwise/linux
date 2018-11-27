@@ -33,6 +33,7 @@
 #include <linux/module.h>
 #include <linux/pid.h>
 #include <linux/pid_namespace.h>
+#include <linux/mutex.h>
 #include <net/netlink.h>
 #include <rdma/rdma_cm.h>
 #include <rdma/rdma_netlink.h>
@@ -107,6 +108,8 @@ static const struct nla_policy nldev_policy[RDMA_NLDEV_ATTR_MAX] = {
 	[RDMA_NLDEV_ATTR_DRIVER_U32]		= { .type = NLA_U32 },
 	[RDMA_NLDEV_ATTR_DRIVER_S64]		= { .type = NLA_S64 },
 	[RDMA_NLDEV_ATTR_DRIVER_U64]		= { .type = NLA_U64 },
+	[RDMA_NLDEV_ATTR_LINK_TYPE]		= { .type = NLA_NUL_STRING,
+				    .len = RDMA_NLDEV_ATTR_ENTRY_STRLEN },
 };
 
 static int put_driver_name_print_type(struct sk_buff *msg, const char *name,
@@ -1103,6 +1106,126 @@ static int nldev_res_get_pd_dumpit(struct sk_buff *skb,
 	return res_get_common_dumpit(skb, cb, RDMA_RESTRACK_PD);
 }
 
+static LIST_HEAD(link_ops);
+static DEFINE_MUTEX(link_ops_mutex);
+
+static const struct rdma_link_ops *link_ops_get(const char *type)
+{
+	const struct rdma_link_ops *ops;
+
+	list_for_each_entry(ops, &link_ops, list) {
+		if (!strcmp(ops->type, type))
+			goto out;
+	}
+	ops = NULL;
+out:
+	return ops;
+}
+
+void rdma_link_register(struct rdma_link_ops *ops)
+{
+	mutex_lock(&link_ops_mutex);
+	if (link_ops_get(ops->type)) {
+		WARN_ONCE("Duplicate rdma_link_ops! %s\n", ops->type);
+		goto out;
+	}
+	list_add(&ops->list, &link_ops);
+out:
+	mutex_unlock(&link_ops_mutex);
+}
+EXPORT_SYMBOL(rdma_link_register);
+
+void rdma_link_unregister(struct rdma_link_ops *ops)
+{
+	mutex_lock(&link_ops_mutex);
+	list_del(&ops->list);
+	mutex_unlock(&link_ops_mutex);
+}
+EXPORT_SYMBOL(rdma_link_unregister);
+
+static int nldev_newlink(struct sk_buff *skb, struct nlmsghdr *nlh,
+			  struct netlink_ext_ack *extack)
+{
+	struct nlattr *tb[RDMA_NLDEV_ATTR_MAX];
+	char ibdev_name[IB_DEVICE_NAME_MAX];
+	const struct rdma_link_ops *ops;
+	char ndev_name[IFNAMSIZ];
+	char type[IFNAMSIZ];
+	int err;
+
+	err = nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			  nldev_policy, extack);
+	if (err || !tb[RDMA_NLDEV_ATTR_DEV_NAME] ||
+	    !tb[RDMA_NLDEV_ATTR_LINK_TYPE] || !tb[RDMA_NLDEV_ATTR_NDEV_NAME])
+		return -EINVAL;
+
+	if (nla_len(tb[RDMA_NLDEV_ATTR_DEV_NAME]) > sizeof(ibdev_name) ||
+	    nla_len(tb[RDMA_NLDEV_ATTR_LINK_TYPE]) > sizeof(type) ||
+	    nla_len(tb[RDMA_NLDEV_ATTR_NDEV_NAME]) > sizeof(ndev_name))
+		return -EINVAL;
+
+	nla_strlcpy(ibdev_name, tb[RDMA_NLDEV_ATTR_DEV_NAME],
+		    sizeof(ibdev_name));
+	if (strchr(ibdev_name, '%'))
+		return -EINVAL;
+
+	nla_strlcpy(type, tb[RDMA_NLDEV_ATTR_LINK_TYPE], sizeof(type));
+	nla_strlcpy(ndev_name, tb[RDMA_NLDEV_ATTR_NDEV_NAME],
+		    sizeof(ndev_name));
+
+	mutex_lock(&link_ops_mutex);
+	ops = link_ops_get(type);
+#ifdef CONFIG_MODULES
+	if (!ops) {
+		mutex_unlock(&link_ops_mutex);
+		request_module("rdma-link-%s", type);
+		mutex_lock(&link_ops_mutex);
+		ops = link_ops_get(type);
+	}
+#endif
+	if (ops)
+		err = ops->newlink(ibdev_name, ndev_name);
+	else
+		err = -ENODEV;
+	mutex_unlock(&link_ops_mutex);
+
+	return err;
+}
+
+static int nldev_dellink(struct sk_buff *skb, struct nlmsghdr *nlh,
+			  struct netlink_ext_ack *extack)
+{
+	struct nlattr *tb[RDMA_NLDEV_ATTR_MAX];
+	char ibdev_name[IB_DEVICE_NAME_MAX];
+	const struct rdma_link_ops *ops;
+	char type[IFNAMSIZ];
+	int err;
+
+	err = nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			  nldev_policy, extack);
+	if (err || !tb[RDMA_NLDEV_ATTR_DEV_NAME] ||
+	    !tb[RDMA_NLDEV_ATTR_LINK_TYPE])
+		return -EINVAL;
+
+	if (nla_len(tb[RDMA_NLDEV_ATTR_DEV_NAME]) > sizeof(ibdev_name) ||
+	    nla_len(tb[RDMA_NLDEV_ATTR_LINK_TYPE]) > sizeof(type))
+		return -EINVAL;
+
+	nla_strlcpy(ibdev_name, tb[RDMA_NLDEV_ATTR_DEV_NAME],
+		    sizeof(ibdev_name));
+	nla_strlcpy(type, tb[RDMA_NLDEV_ATTR_LINK_TYPE], sizeof(type));
+
+	mutex_lock(&link_ops_mutex);
+	ops = link_ops_get(type);
+	if (ops)
+		err = ops->dellink(ibdev_name);
+	else
+		err = -ENODEV;
+	mutex_unlock(&link_ops_mutex);
+
+	return err;
+}
+
 static const struct rdma_nl_cbs nldev_cb_table[RDMA_NLDEV_NUM_OPS] = {
 	[RDMA_NLDEV_CMD_GET] = {
 		.doit = nldev_get_doit,
@@ -1110,6 +1233,14 @@ static const struct rdma_nl_cbs nldev_cb_table[RDMA_NLDEV_NUM_OPS] = {
 	},
 	[RDMA_NLDEV_CMD_SET] = {
 		.doit = nldev_set_doit,
+		.flags = RDMA_NL_ADMIN_PERM,
+	},
+	[RDMA_NLDEV_CMD_NEWLINK] = {
+		.doit = nldev_newlink,
+		.flags = RDMA_NL_ADMIN_PERM,
+	},
+	[RDMA_NLDEV_CMD_DELLINK] = {
+		.doit = nldev_dellink,
 		.flags = RDMA_NL_ADMIN_PERM,
 	},
 	[RDMA_NLDEV_CMD_PORT_GET] = {
