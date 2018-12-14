@@ -112,5 +112,6 @@ static inline struct rxe_dev *rxe_get_dev_from_net(struct net_device *ndev)
 
 void rxe_port_up(struct rxe_dev *rxe);
 void rxe_port_down(struct rxe_dev *rxe);
+void rxe_set_port_state(struct net_device *ndev, struct rxe_dev *rxe);
 
 #endif /* RXE_H */
