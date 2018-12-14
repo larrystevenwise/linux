@@ -585,6 +585,14 @@ void rxe_set_port_state(struct net_device *ndev, struct rxe_dev *rxe)
 		rxe_port_down(rxe);
 }
 
+void rxe_netdev_unregister_work(struct work_struct *work)
+{
+	struct rxe_dev *rxe;
+
+	rxe = container_of(work, struct rxe_dev, netdev_unregister_work);
+	ib_unregister_device_and_put(&rxe->ib_dev);
+}
+
 static int rxe_notify(struct notifier_block *not_blk,
 		      unsigned long event,
 		      void *arg)
@@ -597,7 +605,7 @@ static int rxe_notify(struct notifier_block *not_blk,
 
 	switch (event) {
 	case NETDEV_UNREGISTER:
-		ib_unregister_device_and_put(&rxe->ib_dev);
+		schedule_work(&rxe->netdev_unregister_work);
 		return NOTIFY_OK;
 
 	case NETDEV_UP:
