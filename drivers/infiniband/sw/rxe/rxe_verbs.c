@@ -1286,10 +1286,3 @@ err1:
 
 	return err;
 }
-
-void rxe_unregister_device(struct rxe_dev *rxe)
-{
-	struct ib_device *dev = &rxe->ib_dev;
-
-	ib_unregister_device(dev);
-}

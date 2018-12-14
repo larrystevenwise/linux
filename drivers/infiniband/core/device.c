@@ -85,6 +85,9 @@ static LIST_HEAD(client_list);
 static DEFINE_MUTEX(device_mutex);
 static DECLARE_RWSEM(lists_rwsem);
 
+/* Used to serialize ib_unregister_driver */
+static DECLARE_RWSEM(unregister_rwsem);
+
 static int ib_security_change(struct notifier_block *nb, unsigned long event,
 			      void *lsm_data);
 static void ib_policy_change_task(struct work_struct *work);
@@ -168,6 +171,7 @@ void ib_device_put(struct ib_device *device)
 	if (refcount_dec_and_test(&device->refcount))
 		complete(&device->unreg_completion);
 }
+EXPORT_SYMBOL(ib_device_put);
 
 static struct ib_device *__ib_device_get_by_name(const char *name)
 {
@@ -179,6 +183,27 @@ static struct ib_device *__ib_device_get_by_name(const char *name)
 
 	return NULL;
 }
+
+struct ib_device *ib_device_get_by_name(const char *name,
+					enum rdma_driver_id driver_id)
+{
+	struct ib_device *device;
+
+	down_read(&lists_rwsem);
+	device = __ib_device_get_by_name(name);
+	if (device && driver_id != RDMA_DRIVER_UNKNOWN &&
+	    device->driver_id != driver_id)
+		device = NULL;
+
+	if (device) {
+		/* Do not return a device if unregistration has started. */
+		if (!refcount_inc_not_zero(&device->refcount))
+			device = NULL;
+	}
+	up_read(&lists_rwsem);
+	return device;
+}
+EXPORT_SYMBOL(ib_device_get_by_name);
 
 int ib_device_rename(struct ib_device *ibdev, const char *name)
 {
@@ -641,28 +666,41 @@ out:
 }
 EXPORT_SYMBOL(ib_register_device);
 
-/**
- * ib_unregister_device - Unregister an IB device
- * @device:Device to unregister
+/* Returns false if the device is already undergoing unregistration in another
+ * thread, and the device pointer may be invalid upon return.
  *
- * Unregister an IB device.  All clients will receive a remove callback.
+ * If true is returned then the caller owns a kref associated with the device
+ * (taken from the kref owned by the list).
+ *
+ * Upon return the device cannot be returned by any 'get' functions.
  */
-void ib_unregister_device(struct ib_device *device)
+static bool ib_pre_unregister(struct ib_device *device)
+{
+	bool already_removed;
+
+	mutex_lock(&device_mutex);
+	down_write(&lists_rwsem);
+	already_removed = list_empty(&device->core_list);
+	list_del_init(&device->core_list);
+	up_write(&lists_rwsem);
+	mutex_unlock(&device_mutex);
+
+	/* Matches the recound_set in ib_alloc_device */
+	ib_device_put(device);
+
+	return !already_removed;
+}
+
+static void __ib_unregister_device(struct ib_device *device)
 {
 	struct ib_client_data *context, *tmp;
 	unsigned long flags;
 
-	/*
-	 * Wait for all netlink command callers to finish working on the
-	 * device.
-	 */
-	ib_device_put(device);
 	wait_for_completion(&device->unreg_completion);
 
 	mutex_lock(&device_mutex);
 
 	down_write(&lists_rwsem);
-	list_del(&device->core_list);
 	write_lock_irq(&device->client_data_lock);
 	list_for_each_entry(context, &device->client_data_list, list)
 		context->going_down = true;
@@ -696,8 +734,114 @@ void ib_unregister_device(struct ib_device *device)
 	up_write(&lists_rwsem);
 
 	device->reg_state = IB_DEV_UNREGISTERED;
+
+	/*
+	 * Drivers using the new flow may not call ib_dealloc_device except
+	 * in error unwind prior to registration success.
+	 */
+	if (device->driver_unregister) {
+		device->driver_unregister(device);
+		ib_dealloc_device(device);
+	}
+}
+
+/**
+ * ib_unregister_device - Unregister an IB device
+ * @device: The device to unregister
+ *
+ * Unregister an IB device.  All clients will receive a remove callback.
+ *
+ * Callers can call this routine only once, and must protect against
+ * races. Typically it should only be called as part of a remove callback in
+ * an implementation of driver core's struct device_driver and related.
+ *
+ * A driver must choose to use either only ib_unregister_device or
+ * ib_unregister_device_and_put & ib_unregister_driver.
+ */
+void ib_unregister_device(struct ib_device *device)
+{
+	down_read(&unregister_rwsem);
+	if (ib_pre_unregister(device))
+		__ib_unregister_device(device);
+	else
+		WARN(true, "Driver mixing %s with _and_put", __func__);
+	up_read(&unregister_rwsem);
 }
 EXPORT_SYMBOL(ib_unregister_device);
+
+/**
+ * ib_unregister_device_and_put - Unregister a device while holding a 'get'
+ * device: The device to unregister
+ *
+ * This is the same as ib_unregister_device(), except it includes an internal
+ * ib_device_put() that should match a 'get' obtained by the caller.
+ *
+ * It is safe to call this routine concurrently from multiple threads while
+ * holding the 'get', however in this case return from the function does not
+ * guarantee the device is destroyed, only that destruction is in-progress.
+ *
+ * Drivers using this flow MUST use the driver_unregister callback to clean up
+ * their resources associated with the device and dealloc it.
+ */
+void ib_unregister_device_and_put(struct ib_device *device)
+{
+	down_read(&unregister_rwsem);
+	if (ib_pre_unregister(device)) {
+		/*
+		 * Caller's get can be returned now that we hold the kref,
+		 * otherwise ib_pre_unregister returned the caller's get
+		 */
+		ib_device_put(device);
+		__ib_unregister_device(device);
+	}
+	up_read(&unregister_rwsem);
+}
+EXPORT_SYMBOL(ib_unregister_device_and_put);
+
+/**
+ * ib_unregister_driver - Unregister all IB devices for a driver
+ * @driver_id: The driver to unregister
+ *
+ * This implements a fence for device unregistration. It only returns once all
+ * devices associated with the driver_id have fully completed their
+ * unregistration and returned from ib_unregister_device*().
+ *
+ * If device's are not yet unregistered it goes ahead and starts unregistering
+ * them.
+ *
+ * The caller must ensure that no devices can be be added while this is
+ * running (or at all for the module_unload case)
+ */
+void ib_unregister_driver(enum rdma_driver_id driver_id)
+{
+	struct ib_device *device, *tmp;
+	LIST_HEAD(driver_devs);
+
+	down_write(&unregister_rwsem);
+	mutex_lock(&device_mutex);
+	down_write(&lists_rwsem);
+	list_for_each_entry_safe(device, tmp, &device_list, core_list) {
+		if (device->driver_id == driver_id)
+			list_move(&device->core_list, &driver_devs);
+	}
+	up_write(&lists_rwsem);
+
+	while ((device = list_first_entry_or_null(
+			&driver_devs, struct ib_device, core_list))) {
+		mutex_unlock(&device_mutex);
+		/*
+		 * We are holding the unregister_rwsem, so it is impossible
+		 * for another thread to be doing registration.
+		 */
+		if (!ib_pre_unregister(device))
+			WARN(true, "Impossible failure of ib_pre_unregister");
+		__ib_unregister_device(device);
+		mutex_lock(&device_mutex);
+	}
+	mutex_unlock(&device_mutex);
+	up_write(&unregister_rwsem);
+}
+EXPORT_SYMBOL(ib_unregister_driver);
 
 /**
  * ib_register_client - Register an IB client
@@ -980,6 +1124,53 @@ void ib_enum_roce_netdev(struct ib_device *ib_dev,
 				dev_put(idev);
 		}
 }
+
+struct ib_device *ib_device_get_by_netdev(struct net_device *ndev,
+					  enum rdma_driver_id driver_id)
+{
+	struct ib_device *ib_dev;
+
+	down_read(&lists_rwsem);
+	list_for_each_entry(ib_dev, &device_list, core_list) {
+		unsigned int port;
+
+		if (driver_id != RDMA_DRIVER_UNKNOWN &&
+		    ib_dev->driver_id != driver_id)
+			continue;
+
+		if (!ib_dev->get_netdev)
+			continue;
+
+		for (port = rdma_start_port(ib_dev);
+		     port <= rdma_end_port(ib_dev); port++) {
+			struct net_device *idev;
+
+			idev = ib_dev->get_netdev(ib_dev, port);
+			if (idev != ndev) {
+				if (idev)
+					dev_put(idev);
+				continue;
+			}
+
+			/*
+			 * Do not return a device if unregistration has
+			 * started.
+			 */
+			if (!refcount_inc_not_zero(&ib_dev->refcount)) {
+				dev_put(idev);
+				continue;
+			}
+
+			up_read(&lists_rwsem);
+			dev_put(idev);
+			return ib_dev;
+		}
+	}
+	up_read(&lists_rwsem);
+
+	return NULL;
+}
+EXPORT_SYMBOL(ib_device_get_by_netdev);
 
 /**
  * ib_enum_all_roce_netdevs - enumerate all RoCE devices
