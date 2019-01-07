@@ -47,5 +47,6 @@ struct rxe_dev *rxe_net_add(struct net_device *ndev);
 
 int rxe_net_init(void);
 void rxe_net_exit(void);
+void rxe_netdev_unregister_work(struct work_struct *work);
 
 #endif /* RXE_NET_H */
