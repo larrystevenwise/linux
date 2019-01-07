@@ -392,8 +392,6 @@ void *rxe_alloc(struct rxe_pool *pool)
 	kref_get(&pool->ref_cnt);
 	read_unlock_irqrestore(&pool->pool_lock, flags);
 
-	kref_get(&pool->rxe->ref_cnt);
-
 	if (atomic_inc_return(&pool->num_elem) > pool->max_elem)
 		goto out_put_pool;
 
@@ -410,7 +408,6 @@ void *rxe_alloc(struct rxe_pool *pool)
 
 out_put_pool:
 	atomic_dec(&pool->num_elem);
-	rxe_dev_put(pool->rxe);
 	rxe_pool_put(pool);
 	return NULL;
 }
@@ -426,7 +423,6 @@ void rxe_elem_release(struct kref *kref)
 
 	kmem_cache_free(pool_cache(pool), elem);
 	atomic_dec(&pool->num_elem);
-	rxe_dev_put(pool->rxe);
 	rxe_pool_put(pool);
 }
 
