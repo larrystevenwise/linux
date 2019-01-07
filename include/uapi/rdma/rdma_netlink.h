@@ -35,6 +35,19 @@ enum {
 	RDMA_NL_RDMA_CM_NUM_ATTR,
 };
 
+/* The minimum version that the iwpm kernel supports */
+#define IWPM_UABI_VERSION_MIN 	3
+
+/* The latest version that the iwpm kernel supports */
+#define IWPM_UABI_VERSION 	4
+
+/* iwarp port mapper message flags */
+enum {
+
+	/* Do not map the port for this IWPM request */
+	IWPM_FLAGS_NO_PORT_MAP = (1 << 0),
+};
+
 /* iwarp port mapper op-codes */
 enum {
 	RDMA_NL_IWPM_REG_PID = 0,
@@ -83,6 +96,7 @@ enum {
 	IWPM_NLA_MANAGE_MAPPING_UNSPEC = 0,
 	IWPM_NLA_MANAGE_MAPPING_SEQ,
 	IWPM_NLA_MANAGE_ADDR,
+	IWPM_NLA_MANAGE_FLAGS,
 	IWPM_NLA_MANAGE_MAPPING_MAX
 };
 
@@ -104,6 +118,7 @@ enum {
 	IWPM_NLA_QUERY_MAPPING_SEQ,
 	IWPM_NLA_QUERY_LOCAL_ADDR,
 	IWPM_NLA_QUERY_REMOTE_ADDR,
+	IWPM_NLA_QUERY_FLAGS,
 	IWPM_NLA_QUERY_MAPPING_MAX,
 };
 
@@ -129,6 +144,7 @@ enum {
 	IWPM_NLA_MAPINFO_UNSPEC = 0,
 	IWPM_NLA_MAPINFO_LOCAL_ADDR,
 	IWPM_NLA_MAPINFO_MAPPED_ADDR,
+	IWPM_NLA_MAPINFO_FLAGS,
 	IWPM_NLA_MAPINFO_MAX
 };
 
