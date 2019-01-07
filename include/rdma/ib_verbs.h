@@ -2525,6 +2525,10 @@ struct ib_device {
 	struct list_head              client_data_list;
 
 	struct ib_cache               cache;
+
+	/* Called after all clients have been destroyed*/
+	void (*driver_unregister)(struct ib_device *dev);
+
 	/**
 	 * port_immutable is indexed by port number
 	 */
@@ -2626,6 +2630,8 @@ int ib_register_device(struct ib_device *device, const char *name,
 		       int (*port_callback)(struct ib_device *, u8,
 					    struct kobject *));
 void ib_unregister_device(struct ib_device *device);
+void ib_unregister_driver(enum rdma_driver_id driver_id);
+void ib_unregister_device_and_put(struct ib_device *device);
 
 int ib_register_client   (struct ib_client *client);
 void ib_unregister_client(struct ib_client *client);
@@ -3926,6 +3932,11 @@ static inline bool ib_access_writable(int access_flags)
 int ib_check_mr_status(struct ib_mr *mr, u32 check_mask,
 		       struct ib_mr_status *mr_status);
 
+void ib_device_put(struct ib_device *device);
+struct ib_device *ib_device_get_by_netdev(struct net_device *ndev,
+					  enum rdma_driver_id driver_id);
+struct ib_device *ib_device_get_by_name(const char *name,
+					enum rdma_driver_id driver_id);
 struct net_device *ib_get_net_dev_by_params(struct ib_device *dev, u8 port,
 					    u16 pkey, const union ib_gid *gid,
 					    const struct sockaddr *addr);
