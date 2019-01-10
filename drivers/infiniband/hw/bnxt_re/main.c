@@ -1134,12 +1134,13 @@ static int bnxt_re_update_gid(struct bnxt_re_dev *rdev)
 	u16 gid_idx, index;
 	int rc = 0;
 
-	if (!test_bit(BNXT_RE_FLAG_IBDEV_REGISTERED, &rdev->flags))
+	if (!ib_device_try_get(&rdev->ibdev))
 		return 0;
 
 	if (!sgid_tbl) {
 		dev_err(rdev_to_dev(rdev), "QPLIB: SGID table not allocated");
-		return -EINVAL;
+		rc = -EINVAL;
+		goto out;
 	}
 
 	for (index = 0; index < sgid_tbl->active; index++) {
@@ -1160,6 +1161,8 @@ static int bnxt_re_update_gid(struct bnxt_re_dev *rdev)
 					    rdev->qplib_res.netdev->dev_addr);
 	}
 
+out:
+	ib_device_put(&rdev->ibdev);
 	return rc;
 }
 
@@ -1542,12 +1545,7 @@ static void bnxt_re_task(struct work_struct *work)
 	re_work = container_of(work, struct bnxt_re_work, work);
 	rdev = re_work->rdev;
 
-	if (re_work->event != NETDEV_REGISTER &&
-	    !test_bit(BNXT_RE_FLAG_IBDEV_REGISTERED, &rdev->flags))
-		goto exit;
-
-	switch (re_work->event) {
-	case NETDEV_REGISTER:
+	if (re_work->event == NETDEV_REGISTER) {
 		rc = bnxt_re_ib_reg(rdev);
 		if (rc) {
 			dev_err(rdev_to_dev(rdev),
@@ -1556,7 +1554,13 @@ static void bnxt_re_task(struct work_struct *work)
 			bnxt_re_dev_unreg(rdev);
 			goto exit;
 		}
-		break;
+		goto exit;
+	}
+
+	if (!ib_device_try_get(&rdev->ibdev))
+		goto exit;
+
+	switch (re_work->event) {
 	case NETDEV_UP:
 		bnxt_re_dispatch_event(&rdev->ibdev, NULL, 1,
 				       IB_EVENT_PORT_ACTIVE);
@@ -1576,6 +1580,8 @@ static void bnxt_re_task(struct work_struct *work)
 	default:
 		break;
 	}
+
+	ib_device_put(&rdev->ibdev);
 	smp_mb__before_atomic();
 	atomic_dec(&rdev->sched_count);
 exit:
