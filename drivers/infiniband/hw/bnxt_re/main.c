@@ -504,21 +504,6 @@ static bool is_bnxt_re_dev(struct net_device *netdev)
 	return false;
 }
 
-static struct bnxt_re_dev *bnxt_re_from_netdev(struct net_device *netdev)
-{
-	struct bnxt_re_dev *rdev;
-
-	rcu_read_lock();
-	list_for_each_entry_rcu(rdev, &bnxt_re_dev_list, list) {
-		if (rdev->netdev == netdev) {
-			rcu_read_unlock();
-			return rdev;
-		}
-	}
-	rcu_read_unlock();
-	return NULL;
-}
-
 static void bnxt_re_dev_unprobe(struct net_device *netdev,
 				struct bnxt_en_dev *en_dev)
 {
@@ -1613,23 +1598,26 @@ static int bnxt_re_netdev_event(struct notifier_block *notifier,
 {
 	struct net_device *real_dev, *netdev = netdev_notifier_info_to_dev(ptr);
 	struct bnxt_re_work *re_work;
-	struct bnxt_re_dev *rdev;
+	struct bnxt_re_dev *rdev = NULL;
+	struct ib_device *ibdev;
 	int rc = 0;
 	bool sch_work = false;
 
 	real_dev = rdma_vlan_dev_real_dev(netdev);
 	if (!real_dev)
 		real_dev = netdev;
-
-	rdev = bnxt_re_from_netdev(real_dev);
-	if (!rdev && event != NETDEV_REGISTER)
-		goto exit;
 	if (real_dev != netdev)
 		goto exit;
 
+	ibdev = ib_device_get_by_netdev(real_dev, RDMA_DRIVER_BNXT_RE);
+	if (!ibdev && event != NETDEV_REGISTER)
+		goto exit;
+	if (ibdev)
+		rdev = container_of(ibdev, struct bnxt_re_dev, ibdev);
+
 	switch (event) {
 	case NETDEV_REGISTER:
-		if (rdev)
+		if (ibdev)
 			break;
 		rc = bnxt_re_dev_reg(&rdev, real_dev);
 		if (rc == -ENODEV)
@@ -1672,6 +1660,9 @@ static int bnxt_re_netdev_event(struct notifier_block *notifier,
 			queue_work(bnxt_re_wq, &re_work->work);
 		}
 	}
+
+	if (ibdev)
+		ib_device_put(ibdev);
 
 exit:
 	return NOTIFY_DONE;
