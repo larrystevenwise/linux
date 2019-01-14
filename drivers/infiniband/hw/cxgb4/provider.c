@@ -58,6 +58,10 @@ static int fastreg_support = 1;
 module_param(fastreg_support, int, 0644);
 MODULE_PARM_DESC(fastreg_support, "Advertise fastreg support (default=1)");
 
+static int no_port_map;
+module_param(no_port_map, int, 0644);
+MODULE_PARM_DESC(no_port_map, "Request port remapping (default=0)");
+
 void _c4iw_free_ucontext(struct kref *kref)
 {
 	struct c4iw_ucontext *ucontext;
@@ -630,6 +634,8 @@ void c4iw_register_device(struct work_struct *work)
 	dev->ibdev.res.fill_res_entry = fill_res_entry;
 	memcpy(dev->ibdev.iwcm->ifname, dev->rdev.lldi.ports[0]->name,
 	       sizeof(dev->ibdev.iwcm->ifname));
+	if (no_port_map)
+		dev->ibdev.iwcm->driver_flags = IW_F_NO_PORT_MAP;
 
 	rdma_set_device_sysfs_group(&dev->ibdev, &c4iw_attr_group);
 	dev->ibdev.driver_id = RDMA_DRIVER_CXGB4;
