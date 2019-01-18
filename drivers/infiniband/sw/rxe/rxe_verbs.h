@@ -385,7 +385,6 @@ struct rxe_dev {
 	struct ib_device_attr	attr;
 	int			max_ucontext;
 	int			max_inline_data;
-	struct kref		ref_cnt;
 	struct mutex	usdev_lock;
 
 	struct net_device	*ndev;
@@ -412,7 +411,6 @@ struct rxe_dev {
 	atomic64_t		stats_counters[RXE_NUM_OF_COUNTERS];
 
 	struct rxe_port		port;
-	struct list_head	list;
 	struct crypto_shash	*tfm;
 };
 
@@ -467,7 +465,6 @@ static inline struct rxe_mem *to_rmw(struct ib_mw *mw)
 }
 
 int rxe_register_device(struct rxe_dev *rxe);
-void rxe_unregister_device(struct rxe_dev *rxe);
 
 void rxe_mc_cleanup(struct rxe_pool_entry *arg);
 

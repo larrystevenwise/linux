@@ -45,43 +45,6 @@
 #include "rxe_net.h"
 #include "rxe_loc.h"
 
-static LIST_HEAD(rxe_dev_list);
-static DEFINE_SPINLOCK(dev_list_lock); /* spinlock for device list */
-
-struct rxe_dev *net_to_rxe(struct net_device *ndev)
-{
-	struct rxe_dev *rxe;
-	struct rxe_dev *found = NULL;
-
-	spin_lock_bh(&dev_list_lock);
-	list_for_each_entry(rxe, &rxe_dev_list, list) {
-		if (rxe->ndev == ndev) {
-			found = rxe;
-			break;
-		}
-	}
-	spin_unlock_bh(&dev_list_lock);
-
-	return found;
-}
-
-struct rxe_dev *get_rxe_by_name(const char *name)
-{
-	struct rxe_dev *rxe;
-	struct rxe_dev *found = NULL;
-
-	spin_lock_bh(&dev_list_lock);
-	list_for_each_entry(rxe, &rxe_dev_list, list) {
-		if (!strcmp(name, dev_name(&rxe->ib_dev.dev))) {
-			found = rxe;
-			break;
-		}
-	}
-	spin_unlock_bh(&dev_list_lock);
-	return found;
-}
-
-
 static struct rxe_recv_sockets recv_sockets;
 
 struct device *rxe_dma_device(struct rxe_dev *rxe)
@@ -229,18 +192,19 @@ static int rxe_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	struct udphdr *udph;
 	struct net_device *ndev = skb->dev;
 	struct net_device *rdev = ndev;
-	struct rxe_dev *rxe = net_to_rxe(ndev);
+	struct rxe_dev *rxe = rxe_get_dev_from_net(ndev);
 	struct rxe_pkt_info *pkt = SKB_TO_PKT(skb);
 
 	if (!rxe && is_vlan_dev(rdev)) {
 		rdev = vlan_dev_real_dev(ndev);
-		rxe = net_to_rxe(rdev);
+		rxe = rxe_get_dev_from_net(rdev);
 	}
 	if (!rxe)
 		goto drop;
 
 	if (skb_linearize(skb)) {
 		pr_err("skb_linearize failed\n");
+		ib_device_put(&rxe->ib_dev);
 		goto drop;
 	}
 
@@ -252,6 +216,12 @@ static int rxe_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	pkt->paylen = be16_to_cpu(udph->len) - sizeof(*udph);
 
 	rxe_rcv(skb);
+
+	/*
+	 * FIXME: this is in the wrong place, it needs to be done when pkt is
+	 * destroyed
+	 */
+	ib_device_put(&rxe->ib_dev);
 
 	return 0;
 drop:
@@ -558,34 +528,16 @@ struct rxe_dev *rxe_net_add(struct net_device *ndev)
 	rxe = (struct rxe_dev *)ib_alloc_device(sizeof(*rxe));
 	if (!rxe)
 		return NULL;
-
+	rxe->ib_dev.driver_unregister = rxe_unregistered;
 	rxe->ndev = ndev;
 
 	err = rxe_add(rxe, ndev->mtu);
 	if (err) {
-		ib_dealloc_device(&rxe->ib_dev);
+		rxe_unregistered(&rxe->ib_dev);
 		return NULL;
 	}
 
-	spin_lock_bh(&dev_list_lock);
-	list_add_tail(&rxe->list, &rxe_dev_list);
-	spin_unlock_bh(&dev_list_lock);
 	return rxe;
-}
-
-void rxe_remove_all(void)
-{
-	spin_lock_bh(&dev_list_lock);
-	while (!list_empty(&rxe_dev_list)) {
-		struct rxe_dev *rxe =
-			list_first_entry(&rxe_dev_list, struct rxe_dev, list);
-
-		list_del(&rxe->list);
-		spin_unlock_bh(&dev_list_lock);
-		rxe_remove(rxe);
-		spin_lock_bh(&dev_list_lock);
-	}
-	spin_unlock_bh(&dev_list_lock);
 }
 
 static void rxe_port_event(struct rxe_dev *rxe,
@@ -638,16 +590,16 @@ static int rxe_notify(struct notifier_block *not_blk,
 		      void *arg)
 {
 	struct net_device *ndev = netdev_notifier_info_to_dev(arg);
-	struct rxe_dev *rxe = net_to_rxe(ndev);
+	struct rxe_dev *rxe = rxe_get_dev_from_net(ndev);
 
 	if (!rxe)
-		goto out;
+		return NOTIFY_OK;
 
 	switch (event) {
 	case NETDEV_UNREGISTER:
-		list_del(&rxe->list);
-		rxe_remove(rxe);
-		break;
+		ib_unregister_device_and_put(&rxe->ib_dev);
+		return NOTIFY_OK;
+
 	case NETDEV_UP:
 		rxe_port_up(rxe);
 		break;
@@ -671,7 +623,8 @@ static int rxe_notify(struct notifier_block *not_blk,
 			event, ndev->name);
 		break;
 	}
-out:
+
+	ib_device_put(&rxe->ib_dev);
 	return NOTIFY_OK;
 }
 
