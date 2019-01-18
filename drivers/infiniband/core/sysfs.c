@@ -1309,8 +1309,8 @@ static void free_port_list_attributes(struct ib_device *device)
 int ib_device_register_sysfs(struct ib_device *device)
 {
 	struct device *class_dev = &device->dev;
+	unsigned int port;
 	int ret;
-	int i;
 
 	device->groups[0] = &dev_attr_group;
 	class_dev->groups = device->groups;
@@ -1325,16 +1325,10 @@ int ib_device_register_sysfs(struct ib_device *device)
 		goto err_put;
 	}
 
-	if (rdma_cap_ib_switch(device)) {
-		ret = add_port(device, 0);
+	rdma_for_each_port (device, port) {
+		ret = add_port(device, port);
 		if (ret)
 			goto err_put;
-	} else {
-		for (i = 1; i <= device->phys_port_cnt; ++i) {
-			ret = add_port(device, i);
-			if (ret)
-				goto err_put;
-		}
 	}
 
 	if (device->ops.alloc_hw_stats)
