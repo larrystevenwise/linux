@@ -342,7 +342,6 @@ static const struct ib_device_ops usnic_dev_ops = {
 	.destroy_qp = usnic_ib_destroy_qp,
 	.get_dev_fw_str = usnic_get_dev_fw_str,
 	.get_link_layer = usnic_ib_port_link_layer,
-	.get_netdev = usnic_get_netdev,
 	.get_port_immutable = usnic_port_immutable,
 	.mmap = usnic_ib_mmap,
 	.modify_qp = usnic_ib_modify_qp,
@@ -362,6 +361,7 @@ static void *usnic_ib_device_add(struct pci_dev *dev)
 	union ib_gid gid;
 	struct in_device *ind;
 	struct net_device *netdev;
+	int ret;
 
 	usnic_dbg("\n");
 	netdev = pci_get_drvdata(dev);
@@ -415,6 +415,10 @@ static void *usnic_ib_device_add(struct pci_dev *dev)
 
 	us_ibdev->ib_dev.driver_id = RDMA_DRIVER_USNIC;
 	rdma_set_device_sysfs_group(&us_ibdev->ib_dev, &usnic_attr_group);
+
+	ret = ib_device_set_netdev(&us_ibdev->ib_dev, us_ibdev->netdev, 1);
+	if (ret)
+		goto err_fwd_dealloc;
 
 	if (ib_register_device(&us_ibdev->ib_dev, "usnic_%d"))
 		goto err_fwd_dealloc;
